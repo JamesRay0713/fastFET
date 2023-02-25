@@ -1,5 +1,3 @@
-# fastFET
-=======
 ##
 logger.info( utils.logMemUsage(10, inspect.stack()[0][3] ))     # 调试锚点：随删
 ##
@@ -241,4 +239,3 @@ ConcentratRatio |  前三个最活跃的宣告前缀/宣告总数（即 `vol_ann
 # 发现：
 - 劫持震荡：
 当`is_MOAS`很大，而`vol_oriAS_peer_pfx`或`vol_oriAS_pfx`很小时，说明存在一个prefix反复被多个AS宣告的情况。
-=======

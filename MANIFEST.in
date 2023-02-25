@@ -1,0 +1,6 @@
+include fastFET/BGPMAGNET/config/*.ini
+include fastFET/BGPMAGNET/README.md
+include fastFET/event_list.csv
+include fastFET/logConfig.json
+include fastFET/README.md
+include requirements.txt
