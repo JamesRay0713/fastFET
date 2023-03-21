@@ -301,7 +301,7 @@ def path_AStotal_rare( ldf_path_AStotal:pl.LazyFrame, obj, space= 8 ):   # 最�
     #       for内复杂度：n*O(xlogx),其中x= O(nk)log(O(nk)),  n是行数，k是最大path长度。简化后O(n^2klog^2(nk))
     for i in range( slots ):
         num= (df_path_AStotal
-            .filter( pl.col('time_bin') <= i)
+            .filter( pl.col('time_bin') <= i) 
             .groupby('AS').agg([
                 pl.col('counts').sum()
             ])

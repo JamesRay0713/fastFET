@@ -12,6 +12,8 @@ import jsonpath
 import logging
 import logging.config
 
+from typing import Union
+
 from fastFET.MultiProcess import ProcessingQueue
 
 #########
@@ -39,15 +41,17 @@ def makePath(path: str):
 
 def intervalMin(type, prjtNm):
     '''- type: `'updates'`(rrc间隔5分钟, route-views间隔15分钟) or `'ribs'`(rrc间隔8小时；route-views间隔2小时)
-    - prjtNm: `'rrc'` or `'route-views'`. 
+    - prjtNm: `'rrc'` or `'rou'`. 
     - return: int(min) '''
     strmap= {'updates': {'rrc': 5, 'rou': 15},
              'ribs'   : {'rrc': 8*60, 'rou': 2*60}}
     return strmap[type][prjtNm[:3]]
 
-def normSatEndTime(interval, satTime: datetime, endTime: datetime):
+def normSatEndTime(interval, satTime: datetime, endTime: datetime=None):
     '''normalize the time to fit file names.
     '''
+    if endTime==None:
+        endTime= satTime
     if interval== 5 or interval== 15:
         while 1:
             if satTime.minute % interval == 0:
@@ -105,6 +109,8 @@ def allIn(interval, realFiles, satTime: datetime, endTime: datetime):
     except:
         logger.info(f'has no parsed files between {satTime} - {endTime}')    
     # 求交集，needlist需全属于hadlist
+    a= set(need).difference( set(had))
+    b= set(had ).difference( set(need))
     if len(set(need) & set(had)) != len(need):
         return False
     
@@ -163,6 +169,9 @@ def computMem(var):
 ##############
 # parse feats#
 ##############
+    # 14个字段
+raw_fields= ['protocol','timestamp','msg_type','peer_IP','peer_AS','dest_pref','path','origin','next_hop','local_pref','MED','community','atomicAGG','aggregator']
+
 
 def runJobs( file_dict, func, nbProcess= 4 ):
     '''- main function'''
@@ -199,9 +208,10 @@ def runJobs( file_dict, func, nbProcess= 4 ):
             func( *args )
 
 
-def csv2df(headers: list, paths: 'list | str', not_priming= True, space=6 ):   # space8()
+def csv2df(paths: Union[list, str], headers: list= raw_fields, not_priming= True, space=6 ):   # space8()
     '''合并paths为大文件；读取数据到pl.dataframe。
     - a step with merging to a big file (need to <5G)
+        - 耗时：rib表(9G, 5800万行)- 15~50s;
     - `args(headers)`: 字段名列表
     - `args(paths)`: 
     - return: pl.DF'''
@@ -209,8 +219,10 @@ def csv2df(headers: list, paths: 'list | str', not_priming= True, space=6 ):   #
         paths= [paths] 
     merged= ''
     str_map= {True: 'upds', False: 'ribs' }
-
+    isUpds= bool(len(paths)-1)
+    
     if len(paths) != 1:     # 非rib
+        paths= [ p for p in paths if p!= None]
         # 先增加一个文件，内容为列名。防止pl读到首行是撤销
         s= '|'.join( headers )+ '|'
         out= os.path.dirname(paths[0])+ '/head.txt'
@@ -219,12 +231,11 @@ def csv2df(headers: list, paths: 'list | str', not_priming= True, space=6 ):   #
         # 后cat合并所有文件
         merged= os.path.dirname(paths[0])+ '/merged.txt'
         t1= time.time()
-        os.system('time cat '+ paths_str+ ' > '+ merged)
+        os.system('cat '+ paths_str+ ' > '+ merged)
         logger.info(' '*8+ str_map[not_priming]+ '---> merge upd files cost: %3.3fs; size: %.3fMb' % (time.time()-t1, os.path.getsize(merged)/1024**2 ) )
         
     # 后读取
     t2= time.time()
-    isUpds= bool(len(paths)-1)
     file_map= {True: merged, False: paths[0] }
     
     df= pl.read_csv(file_map[ isUpds ], sep='|', has_header= isUpds , ignore_errors= True)

@@ -11,6 +11,8 @@ logger.info( utils.logMemUsage(10, inspect.stack()[0][3] ))     # 调试锚点�
 - requirement的预安装，特别是bgpdump
 - 针对异常类型的特征设计：子前缀劫持、路径劫持、路由泄露等，连接其他框架？
 
+require add:
+    - pyarrow
 
 # BGP特征提取工具 
 
@@ -144,7 +146,7 @@ dynamic | is_WA | 属于撤销后宣告的消息数
 \- | is_longer_unq_path | 去重后路径变长的消息数
 \- | is_shorter_unq_path | 去重后路径变短的消息数
 \- | is_new | 属于全新宣告的消息数
-\- | is_dup_ann | 属于完全重复宣告的消息数
+\- | is_dup_ann | 属于重复宣告的消息数（仅prefix重复）
 \- | is_AWnA | 属于宣告-撤销多次-宣告的消息数
 \- | is_imp_wd | 属于隐式撤销的消息数（重复宣告，但其他属性变化）
 \- | is_WnA | 属于撤销多次-宣告的消息数
@@ -152,7 +154,7 @@ dynamic | is_WA | 属于撤销后宣告的消息数
 \- | is_AnW | 属于多次宣告-撤销的消息数
 \- | is_WAn | 属于撤销-多次宣告的消息数
 \- | is_dup_wd | 属于重复撤销的消息数
-\- | is_dup | 属于重复宣告/撤销的消息数
+\- | is_dup | 属于重复宣告的消息数（完全重复）
 \- | is_flap | 属于宣告-撤销-宣告，且属性完全不变的消息数
 \- | is_NADA | 属于宣告-撤销-宣告，但属性有变化的消息数
 \- | is_imp_wd_spath | 属于路径属性不变的隐式撤销的消息数
@@ -165,24 +167,24 @@ dynamic | is_WA | 属于撤销后宣告的消息数
 \- | ED_avg | 同一peer-prefix下，平均的编辑距离值的消息数
 \- | ED_0 | 同一peer-prefix下，编辑距离为0的消息数
 \- | ED_1 ~ ED_10 | 同一peer-prefix下，编辑距离为1~10的消息数
-ratio | ratio_firstOrder | 最活跃的宣告前缀/宣告总数（即 `vol_ann_pfx_max / vol_ann_num`）
-\- | ratio_ann | 宣告量占更新消息总量之比（即`vol_ann_num / vol_total_num`）
-\- | ratio_wd | 撤销量占更新消息总量之比（即`vol_wd_num / vol_total_num`）
-\- | ratio_origin0 | IGP占宣告量之比（即`vol_origin0 / vol_ann_num`）
-\- | ratio_origin1 | EGP占宣告量之比（即`vol_origin1 / vol_ann_num`）
-\- | ratio_origin2 | IMCOMPLETE占宣告量之比（即`vol_origin2 / vol_ann_num`）
-\- | ratio_dup_ann | 完全重复宣告占宣告量之比（即`is_dup_ann / vol_ann_num`）
-\- | ratio_flap | 属性完全不变的宣-撤-宣占宣告量之比（即`is_flap / vol_ann_num`）
-\- | ratio_NADA | 属性有变化的宣-撤-宣占宣告量之比（即`is_NADA / vol_ann_num`）
-\- | ratio_imp_wd | 隐式撤销占宣告量之比（即`is_imp_wd / vol_ann_num`）
-\- | ratio_imp_wd2 | 隐式撤销占隐式撤销+撤销之比（即`is_imp_wd / (is_imp_wd+ vol_wd_num)`）
-\- | ratio_exp_wd | 真正撤销占隐式撤销+撤销之比（即`vol_wd_num / (is_imp_wd+ vol_wd_num)`）
+ratio | ratio_firstOrder | 最活跃的宣告前缀/宣告总数（即 `v_pfx_A_max / v_A`）
+\- | ratio_ann | 宣告量占更新消息总量之比（即`v_A / v_total`）
+\- | ratio_wd | 撤销量占更新消息总量之比（即`v_W / v_total`）
+\- | ratio_origin0 | IGP占宣告量之比（即`v_IGP / v_A`）
+\- | ratio_origin1 | EGP占宣告量之比（即`v_EGP / v_A`）
+\- | ratio_origin2 | IMCOMPLETE占宣告量之比（即`v_ICMP / v_A`）
+\- | ratio_dup_ann | 完全重复宣告占宣告量之比（即`is_dup_ann / v_A`）
+\- | ratio_flap | 属性完全不变的宣-撤-宣占宣告量之比（即`is_flap / v_A`）
+\- | ratio_NADA | 属性有变化的宣-撤-宣占宣告量之比（即`is_NADA / v_A`）
+\- | ratio_imp_wd | 隐式撤销占宣告量之比（即`is_imp_wd / v_A`）
+\- | ratio_imp_wd2 | 隐式撤销占隐式撤销+撤销之比（即`is_imp_wd / (is_imp_wd+ v_W)`）
+\- | ratio_exp_wd | 真正撤销占隐式撤销+撤销之比（即`v_W / (is_imp_wd+ v_W)`）
 \- | ratio_imp_wd_dpath | 路径属性不同的隐式撤销占隐式撤销之比（即`is_imp_wd_dpath / is_imp_wd`）
 \- | ratio_imp_wd_spath | 路径属性相同的隐式撤销占隐式撤销之比（即`is_imp_wd_spath / is_imp_wd`）
-\- | ratio_new | 全新宣告占宣告量之比（即`is_new / vol_ann_num`）
-\- | ratio_wd_dups | 重复撤销占撤销量之比（即`is_dup_wd / vol_wd_num`）
-\- | ratio_longer_path | 更长路径宣告占宣告量之比（即`is_longer_path / vol_ann_num`）
-\- | ratio_shorter_path | 更短路径宣告占宣告量之比（即`is_shorter_path / vol_ann_num`）
+\- | ratio_new | 全新宣告占宣告量之比（即`is_new / v_A`）
+\- | ratio_wd_dups | 重复撤销占撤销量之比（即`is_dup_wd / v_W`）
+\- | ratio_longer_path | 更长路径宣告占宣告量之比（即`is_longer_path / v_A`）
+\- | ratio_shorter_path | 更短路径宣告占宣告量之比（即`is_shorter_path / v_A`）
 \- | ratio_longer_path2 | 更长路径宣告占更长/短宣告量之比（即`is_longer_path / (is_longer_path+ is_shorter_path)`）
 \- | ratio_shorter_path2 | 更短路径宣告占更长/短宣告量之比（即`is_shorter_path / (is_longer_path+ is_shorter_path)`）
 node_level_graph | nd_degree_centrality | 节点平均度中心性
@@ -220,22 +222,27 @@ AS_level_graph | gp_nb_of_nodes | 总节点数
 \- | label	|	异常类型标签
 
 
+
+
 ## 特征补充
 
 字段            |  说明
  ----           |  ----
-ConcentratRatio |  前三个最活跃的宣告前缀/宣告总数（即 `vol_ann_pfx_max / vol_ann_num`）
+ConcentratRatio |  前三个最活跃的宣告前缀/宣告总数（即 `vol_ann_pfx_max / v_A`）
 
 
-## 其他注意事项
+## 其他注意事项 
 
 1. BGP RAW DATA: 采集时间间隔不统一，如rrc00中20030723.0745之前为15min（且时刻不固定），之后为5min（时刻固定）。
-2. txt DATA: path 字段可能存在如下形式: 
+2. MRT文件解析后，path 字段可能存在`{}`形式，如下: 
     - 58057 6939 4635 4788 38044 23736
     - 58057 6939 4635 4788 38044 {23736}
     - 58057 6939 1299 2603 2603 2603 6509 {271,7860,8111,53904}
+3. `stat.ripe.net`的API获取的路由，path字段可能存在`[]`形式。
+3. `Route-Views`中的MRT文件名格式不严谨，经常出现无规律的时间戳。
 
 
 # 发现：
 - 劫持震荡：
 当`is_MOAS`很大，而`vol_oriAS_peer_pfx`或`vol_oriAS_pfx`很小时，说明存在一个prefix反复被多个AS宣告的情况。
+- outage类型难溯源

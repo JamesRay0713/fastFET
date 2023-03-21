@@ -118,18 +118,18 @@ featTree= { # df.lazy()
                 # 因此：nx的特征有2+5=7个 ；nk的特征有12个
 
         "graphNode_nx": {      # 4个 该类特征先得到每个节点的特征的值→ 后算均值
-            #'nd_load_centrality': None,    # 45s
+            'nd_load_centrality': None,    # 45s
             'nd_degree' : None,
-            #'nd_square_clustering': None,  # 53.6s
+            'nd_square_clustering': None,  # 53.6s
             'nd_average_neighbor_degree' : None            
         }, 
         "graphNode_nk": {   # 13个。该类特征也是先得到每个节点的特征的值→ 后算均值。只不过是networkit版本
             'nd_degree_centrality': None,
             'nd_node_clique_number': None,
-            'nd_number_of_cliques': None,       # 1.3s。rib生成的无删减topo图下(8万node, 11万边)的耗时为 571s
+            'nd_number_of_cliques': None,       # rib生成的无删减topo图下(8万node, 11万边)的耗时为 571s
             'nd_closeness_centrality': None,    # 上述场景下，23s 
             'nd_betweenness_centrality': None,  # 上述场景下，407s
-            #'nd_local_efficiency': None,   # 33s
+            'nd_local_efficiency': None,   # 33s
             'nd_harmonic_centrality': None,     # 上述场景下，289s
             'nd_eigenvector_centrality': None,
             'nd_pagerank': None,
@@ -143,17 +143,17 @@ featTree= { # df.lazy()
             'gp_nb_of_edges': None,
             'gp_diameter': None,
             'gp_assortativity': None,
-            #'gp_largest_eigenvalue': None,          # adjacency_eigenvalues
-            #'gp_algebraic_connectivity': None,      # laplacian_eigenvalues
-            #'gp_effective_graph_resistance': None,  # laplacian_eigenvalues
-            #'gp_symmetry_ratio': None,              # adjacency_eigenvalues
-            #'gp_natural_connectivity': None,        # adjacency_eigenvalues
-            #'gp_node_connectivity': None,          # 312s
-            #'gp_edge_connectivity': None,          # 71s
-            #'gp_weighted_spectrum_3': None,         # normalized_laplacian_eigenvalues
-            #'gp_weighted_spectrum_4': None,         # normalized_laplacian_eigenvalues
+            'gp_largest_eigenvalue': None,          # adjacency_eigenvalues
+            'gp_algebraic_connectivity': None,      # laplacian_eigenvalues
+            'gp_effective_graph_resistance': None,  # laplacian_eigenvalues
+            'gp_symmetry_ratio': None,              # adjacency_eigenvalues
+            'gp_natural_connectivity': None,        # adjacency_eigenvalues
+            'gp_node_connectivity': None,          # 312s
+            'gp_edge_connectivity': None,          # 71s
+            'gp_weighted_spectrum_3': None,         # normalized_laplacian_eigenvalues
+            'gp_weighted_spectrum_4': None,         # normalized_laplacian_eigenvalues
             'gp_percolation_limit': None,
-            #'gp_nb_spanning_trees': None           # laplacian_eigenvalues 
+            'gp_nb_spanning_trees': None           # laplacian_eigenvalues 
         }
     }
 }

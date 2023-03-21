@@ -1,7 +1,7 @@
 import ctypes
 from operator import itemgetter
 import os
-import re
+import re, glob
 import sys
 import time
 import inspect
@@ -19,6 +19,7 @@ from fastFET.MultiProcess import ProcessingQueue
 from fastFET.featTradition import *
 from fastFET.featGraph import GraphBase
 from fastFET.collectData import GetRawData
+from fastFET.bgpToolKit import DownloadParseFiles, simple_plot
 
 utils.setup_logging()
 logger= utils.logger
@@ -507,6 +508,8 @@ class FET():
                 
             # 3、 当前monitor采集的收尾工作
             self.postHandler(save_path, 6)
+            
+        # 只从多个rib表采集特征的场景
         else:
             res= {}
             feats_dict= utils.featsGrouping(featTree.featTree, self.featNms)
@@ -552,6 +555,7 @@ class FET():
         if upd_dic:
             # 注： paths_upd 可能为空[]
             for monitor, (paths_upd, real_sat_time ) in upd_dic[1].items():  # sapce2  # 可以并行每个monitor，但没有做，一般只需采集1-2个monitor
+                logger.info('- '*20)
                 logger.info(' '*2+ '%s: ' % monitor)
                 
                 if paths_upd==[] or paths_upd== None:
@@ -559,7 +563,7 @@ class FET():
                 else:
                     t2= time.time()
                     if rib_dic:
-                        path_rib= [rib_dic[1][monitor]]
+                        path_rib= rib_dic[1][monitor]
                     else:
                         path_rib= None
                     # 拿到了一个rrc下的txt文件集合和一个rib.txt了...
@@ -579,7 +583,7 @@ class FET():
     def run(self, only_rib= False):
         '''
         - description: 特征提取工具的主要api, 对特征列表进行完整的特征提取。
-        - args-> only_rib {*}: 仅当fet对象应用于`只从大量rib表采集图特征进行分析`的场景时为`True`
+        - args-> only_rib {*}: 适用场景：`只从大量rib表采集图特征进行分析`
         - return {*} 特征存放的目录。
         '''
         ### 太初之时，设置多进程运行方式
@@ -604,7 +608,80 @@ class FET():
         
         utils.runJobs(fileDict, self.eventHandler)
         
-        return self.raw_dir+ 'features/'
+        p=self.raw_dir+ 'features/'
+        logger.info(f'FEATURE output path: {p}')
+        return p
+
+#简便模式：针对快速分析一个事件
+def FET_vSimple(t_start, t_end, collector, stored_dir= './temp_events/', make_plot= False):
+    '''- FET工具的简单版本，用于快速得到某一时段的简单特征曲线
+        - return {pl.df}'''
+    # 拿到要提取特征的paths列表
+    paths= sorted(DownloadParseFiles('a', t_start, t_end, collector, stored_dir).run())
+    #paths= sorted(glob.glob('/home/huanglei/work/z_test/1_some_events_details_analysis/temp_events/parsed/*'))
+
+    # df的读取，预处理
+    t0= time.time()
+    bigdf= utils.csv2df(paths)
+    print(f'read to bigdf cost: {(time.time()-t0):.2f} s')
+    
+    t1= time.time()
+    first_ts= bigdf[0,'timestamp']
+    df= (bigdf.lazy()
+        .filter((pl.col("msg_type") != 'STATE'))
+        .filter( ((pl.col('path').is_not_null()) | (pl.col("msg_type") == 'W') )) 
+        .with_column( pl.col('path').str.replace(' \{.*\}', ''))
+        .select([ 
+            ((pl.col('timestamp')- first_ts)// 60).cast(pl.Int16).alias('time_bin'),
+            pl.col('timestamp'), 
+            pl.when( pl.col('msg_type')== 'A').then( pl.lit(1)).otherwise(pl.lit(0)).cast(pl.Int8).alias('msg_type'),
+            'peer_AS', 
+            pl.col('dest_pref').cast(pl.Utf8),
+            pl.col('path').cast(pl.Utf8)        
+        ])
+        .with_columns( [
+            pl.col('path').str.extract(' (\d+)$', 1).cast(pl.UInt32).alias('origin_AS')
+        ] )
+        .with_row_count('index')
+    ).collect()
+    print(f"feats pre-process: {(time.time()-t1):.2f} s, num_of_miniutes= {df['time_bin'].unique().shape[0]}")
+
+    # 特征提取
+    t2= time.time()
+    ldf_list= [df.lazy().groupby('time_bin').agg( list(jsonpath.jsonpath(featTree.featTree, '$..vol_sim')[0].values())[:3])]
+
+    func_names_pfx= list(featTree.featTree['volume']['vol_pfx'].keys())[:-1]+ \
+                    list(featTree.featTree['volume']['vol_pfx']['vol_pfx_peer'].keys())
+    for func_name in func_names_pfx:
+        ldf_list.append( globals()[ func_name ]( df.lazy(), None ).agg(
+            list(jsonpath.jsonpath(featTree.featTree, '$..'+func_name)[0].values())[0] ) )
+
+    func_names_ori= list(featTree.featTree['volume']['vol_oriAS'].keys())
+    for func_name in func_names_ori:
+        ldf_list.append( globals()[ func_name ]( df.lazy().filter(pl.col('msg_type')== 1), None ).agg(
+            list(jsonpath.jsonpath(featTree.featTree, '$..'+func_name)[0].values())[0]
+        ) )
+
+    df_list= pl.collect_all( ldf_list )
+    print(f"got feats({len(df_list)}): {(time.time()-t2):.2f} s")
+
+    # 特征汇总
+    df_res= df.groupby('time_bin').agg(
+        pl.col('timestamp').first().apply( lambda x: dt.datetime.fromtimestamp(x, tz= dt.timezone.utc).strftime('%Y/%m/%d %H:%M')).alias('date')
+    ) 
+    for df_ in df_list:   
+        df_res= df_res.join(df_, on='time_bin')   
+    df_res.sort('time_bin', in_place= True)
+
+    # 导出
+    p= f"{stored_dir}/simple_feats_{t_start}_{collector}.csv"
+    df_res.to_csv(p)
+    print(f"stored_path: `{p}`")
+
+    # 作图
+    if make_plot:
+        simple_plot(p, subplots=False, has_label=False)
+    return df_res
 
 @utils.timer
 def preProcess(fields, chunk, slot, first_ts, tag_plen= True, tag_punq= True, tag_oriAS= True, space= None):   # space8
@@ -616,7 +693,7 @@ def preProcess(fields, chunk, slot, first_ts, tag_plen= True, tag_punq= True, ta
     - tag_plen, tag_punq, tag_oriAS: 分别标记需不需要在预处理中执行3种expr
     - return: <=13列（一定有的8+1(index)列 + 可能有的4列 ）.
     - TODO: 还可再优化，越简单的特征，其实预处理步骤应该更少。'''
-    df= utils.csv2df(fields, chunk).with_columns([
+    df= utils.csv2df(chunk, fields ).with_columns([
         pl.col('path').cast(pl.Utf8),
         pl.col('dest_pref').cast(pl.Utf8),
         pl.col('local_pref').cast(pl.Int64),

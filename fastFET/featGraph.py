@@ -65,19 +65,25 @@ class GraphBase( object ):
         '''
         peer= None
         # 1、先获取rib表并裁剪（只留3列，cut_peer为true时只留出现最多的peer的行）。
-        df_rib= utils.csv2df( raw_fields, path_rib ).select( [
+        df_rib= utils.csv2df( path_rib, raw_fields).select( [
                     'peer_AS', 'dest_pref', 'path' ])
+        #df_rib.to_csv('/home/huanglei/work/z_test/1_some_events_details_analysis/testforGraph/a_complete_rib.csv')
         rib_lines= df_rib.shape[0]
         #cut_peer= rib_lines>300000 and cut_peer    # 更新‘裁剪peer’的tag  （更新：一旦需要计算图特征，则必须只保留一个peer的行）
         if cut_peer:
             # 拿到将被保留的peer
-            peer= df_rib.groupby('peer_AS').agg(pl.col('path').count()).sort('path',reverse=True)[0,0]
+            peer_size= df_rib.groupby('peer_AS').agg(pl.col('path').count()).sort('path',reverse=True)
+            peer= peer_size[0,0]
+
+            logger.info(' '*(space+2)+ f'peers situation in `{os.path.basename(path_rib[0])}`:')
+            logger.info(' '*(space+4)+ f"peers_num={peer_size.shape[0]}; peer_rank1=AS{peer}({peer_size[0,1]}/{peer_size['path'].sum()}); peer_rank2=AS{peer_size[1,0]}({peer_size[1,1]}/{peer_size['path'].sum()})")
+            
             ldf_rib= GraphBase.expr_block_cut( df_rib, peer ) # debug：rib表的peer-pfx不一定具有唯一性，因此需分组取末行。但为了减少时间成本，应先裁剪了peer, 再对pfx去重
         else:
             ldf_rib= GraphBase.expr_block_notcut(df_rib)
         # 2、后获取priming_upds并裁剪（只留3列，cut_peer为true时只留刚刚找到的peer的行）
         if len(paths_priming):
-            df_priming= utils.csv2df( raw_fields, paths_priming, not_priming= False).select( [
+            df_priming= utils.csv2df(paths_priming, raw_fields, not_priming= False).select( [
                     'peer_AS', 'dest_pref', 'path' ])   # 此时W类行的path为空。
             if cut_peer:
                 ldf_priming= GraphBase.expr_block_cut( df_priming, peer )
@@ -100,8 +106,8 @@ class GraphBase( object ):
     #@utils.timer
     def perSlotTopo(pd_shared_topo, pd_shared_preDF= None, j= None, space=12):   # space14()
         '''self.perSlotComput子函数：拿到当前slot的拓扑的边关系(rib+到当前slot的upds)
-        - pd_shared_preDF(pd.DF): chunk中只含A类型的updates的df['time_bin', 'peer_AS', 'dest_pref', 'path_raw']
-        - pd_shared_topo(pd.DF): 来自self.latestPrimingTopo。更新到事件起始时刻的rib表的df['peer_AS', 'dest_pref', 'path_raw']
+        - pd_shared_preDF(pd.DF): chunk中只含A类型的updates的df['time_bin', 'peer_AS', 'dest_pref', 'path_raw'], 默认peer_AS只有一种
+        - pd_shared_topo(pd.DF): 来自self.latestPrimingTopo。更新到事件起始时刻的rib表的df['peer_AS', 'dest_pref', 'path_raw'], 默认peer_AS只有一种
         - j: time_bin块号
         - return: 当前slot的rib表中提取的所有边构成的graph
         - 重要：由于不知名的原因，pl.DF无法在子进程中使用表达式，因此改为pandas.DF
@@ -124,6 +130,7 @@ class GraphBase( object ):
                 # 然后把 pd_cur_upds 合并到topo总表，并再次按组择其最新；后把path列展开成一列
                 #   注：rib表约有150万+的路径，完全展开后将有650万+的AS。
             pd_topo= pd_shared_topo.value
+
         all_path= ( pd.concat([pd_topo, pd_cur_upds], ignore_index=True)
             .groupby([ 'peer_AS', 'dest_pref' ])
             .tail(1)
@@ -202,6 +209,17 @@ class GraphBase( object ):
             logger.info(f' '*(space+2)+ f'nerrow the topo nodes: {num_nodes_bfo} -> {len(nodes)}' )
         return(G, nodes)
 
+    @staticmethod
+    def get_subgraph_without_low_degree(G, min_degree= 5):
+        '''- 删除出度小于min_degree(含)的节点
+           - 该方法比上面那个k-core子图的方法更快'''
+        Gnew= nx.create_empty_copy(G)
+        Gnew.add_nodes_from(G.nodes())
+        Gnew.add_edges_from(G.edges())
+        nodes_to_remove = [node for node, degree in dict(Gnew.out_degree()).items() if degree <= min_degree]
+        Gnew.remove_nodes_from(nodes_to_remove)
+        return Gnew, Gnew.nodes
+    
     @staticmethod
     def funkList( feats_dict, G, nodes, space=12 ):   # space14()
         ''' 获取所有图特征的函数接口 
@@ -380,8 +398,11 @@ class GraphBase( object ):
         #       造成该time_bin特征的重复计算。为此直接复制time_bin-1处算得得特征即可
         logger.info(f' '*(space)+ f'start `perSlotComput`-----------{j:4d}: ( pid:{os.getpid()}[{utils.curMem()}], ppid:{os.getppid()}[{utils.curMem(True)}] )')
         
-        # 1, 画最新的全局拓扑
+        # 1, 画最新的全局拓扑。step1+step2.1耗时：在一个peer的98万个条目(即7万节点, 11万边→ 缩减1660节点, 1万边)下，耗时20s
         G = GraphBase.perSlotTopo(pd_shared_topo,pd_shared_preDF, j, space+2)
+            # 保存缩减前的节点数、边数
+        num_ori_nodes= len(G.nodes)
+
         
         # 2, 计算当前图中的特征
         # 2.1, G的简化：图太大，需要用k-core缩减图的精度        
@@ -721,6 +742,8 @@ class graphInterAS( object ):
         '''- 因为class graphNode中特征函数返回的是所有节点的特征的值dict{node: val}
         - 所以需计算均值以得到该slot下的一个值'''
         dic= func( *args )
+        if not isinstance(dic, dict):
+            dic= dict(dic)
         return np.mean([*dic.values()])
 
     @staticmethod
