@@ -13,3 +13,4 @@ psutil==5.9.2
 requests
 tqdm==4.64.1
 urllib3
+pyarrow
