@@ -1,6 +1,3 @@
-##
-logger.info( utils.logMemUsage(10, inspect.stack()[0][3] ))     # 调试锚点：随删
-##
 
 持续优化的问题：
 - 计算ED那里，对比测试多进程的情况。

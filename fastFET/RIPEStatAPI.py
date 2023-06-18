@@ -5,7 +5,7 @@
 - version: 1.0
 - Author: JamesRay
 - Date: 2023-03-18 05:30:31
-- LastEditTime: 2023-03-19 06:55:09
+- LastEditTime: 2023-06-17 10:01:10
 '''
 import requests
 import jsonpath, json
@@ -17,7 +17,7 @@ class tools():
     @staticmethod
     def fill_url(*args, **kwargs):
         '''
-        - description: 利用参数组合成一个完整的url
+        - description: 生成url
         - args-> args {array}: array_0: str like `/data/*/data.json`
         - args-> kwargs {object}: 
         - return {*}
@@ -44,8 +44,7 @@ class ripeAPI():
 
     @staticmethod
     def pfx2AS(pfxes: Union[str, list], query_time= ''):
-        '''- 给定一个/一组prefix, 输出其所属的AS(列表)
-        - 注：该方法可以获取pfx的`母前缀`
+        '''- 给定一个/一组prefix, 输出所属的AS(列表)
         - args-> query_time {`'2017-04-26T16:00'`}：查找过去某一时刻该pfx所属的AS
             - 注意：查询时间只能是00:00, 08:00, 16:00'''
         if isinstance(pfxes, str):
@@ -69,8 +68,9 @@ class ripeAPI():
 
     @staticmethod
     def AS2pfx(ASn:str, starttime='', endtime= ''):
-        '''- 给定一个AS, 输出其拥有的前缀列表
-        - args-> starttime/endtime {`'2017-04-30T00:00'`}'''
+        '''- 获取一个AS拥有的前缀列表
+        - args-> starttime/endtime {`'2017-04-30T00:00'`}
+        '''
         url= tools.fill_url('/data/announced-prefixes/data.json', resource= ASn, starttime= starttime, endtime= endtime)  
         try:
             data= requests.get(url).json()
@@ -98,7 +98,7 @@ class ripeAPI():
 
     @staticmethod
     def ip2pfx_and_AS(ips: Union[str, list]):
-        '''- 查找ip所在的prefix和AS。此法有可能返回空值。'''
+        '''- 查找ip所在的prefix和AS。可能返回空值。'''
         if isinstance(ips, str):
             ips= [ips]
         res= {}
@@ -108,6 +108,27 @@ class ripeAPI():
             res[ip]= data
         return res
         
+    @staticmethod
+    def full_table_peer_list(query_time= ''):
+        '''- 获取rrc中属于`full-table`的peers，即高视野peer。
+        - 参数格式：`"2021-02-01T09:00"`
+        - 返回2个set：`full-table`和非`full-table`, 其元素为`(asn, ip, pfx_version)` '''
+        url_for_thd= tools.fill_url('/data/ris-full-table-threshold/data.json', query_time= query_time)
+        data1= requests.get(url_for_thd).json()['data']
+        v4_thd= data1['v4']
+        v6_thd= data1['v6']
+
+        whole_peer_list= ripeAPI.rrc2peer(query_time)
+        p_full= set()
+        p_nfull=set()
+        for rrc, lis in whole_peer_list.items():
+            for dic in lis:
+                if dic['v4_prefix_count']>= v4_thd or dic['v6_prefix_count']>= v6_thd:
+                    p_full.add( (dic['asn'], dic['ip'], dic['v4_prefix_count']+dic['v6_prefix_count']) )
+                else:
+                    p_nfull.add( (dic['asn'], dic['ip']) )
+        return (p_full, p_nfull)
+
     @staticmethod
     def reserved_prefixes():
         '''- 获取保留IP地址块列表'''
@@ -134,7 +155,8 @@ class ripeAPI():
 
 
 if __name__== "__main__":
-    res= ripeAPI.ip2pfx_and_AS('111.91.233.1')
+    res= ripeAPI.full_table_peer_list("2021-02-01T09:00")
     '''with open('/home/huanglei/work/z_test/1_analysis_routing_flap/tt.json', 'w') as f:
         json.dump(res, f)'''
     print(res)
+    print(len(res[0]), len(res[1]))

@@ -5,7 +5,7 @@
 - version: 1.0
 - Author: JamesRay
 - Date: 2023-02-06 13:10:54 
-- LastEditTime: 2023-03-20 00:25:45
+- LastEditTime: 2023-06-17 04:51:27
 '''
 import os, json, time, re, glob, jsonpath
 import requests
@@ -16,7 +16,7 @@ from typing import Union, List, Dict
 import multiprocessing, subprocess
 from multiprocessing import Pool
 import tqdm
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import networkx as nx
 import pandas as pd
 import polars as pl
@@ -25,14 +25,18 @@ from scipy.stats import kurtosis
 from scipy.fft import fft, ifft
 import statistics
 import pycountry
-    
+
 from sklearn.feature_selection import VarianceThreshold, chi2, SelectKBest, mutual_info_classif 
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier as RFC
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+from matplotlib.dates import DateFormatter, AutoDateLocator
+from matplotlib_venn import venn2
 
 from fastFET import utils
+from fastFET.RIPEStatAPI import ripeAPI
 from fastFET.featGraph import graphInterAS
 logger= utils.logger
 
@@ -43,11 +47,7 @@ from geopy.geocoders import Bing
 import geoip2.database
 
 class CommonTool(object):
-    '''分析BGP事件时常用工具集：
-        - AS, prefix, IP等实体到地理位置的转换
-        - AS, prefix, IP间的互相搜索, 更多API参考: `https://stat.ripe.net/docs/02.data-api/`
-        - 获取保留IP地址块列表
-        '''
+    '''分析BGP事件时常用工具集'''
 
     @staticmethod
     def ip2coord(IPs:list):
@@ -87,11 +87,9 @@ class CommonTool(object):
                 raise RuntimeError(f'there is no `{path_db}`, please execute command as follow:\n \
                     wget https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=ClwnOBc8c31uvck8&suffix=tar.gz ;tar -zxvf geoip* ; mv GeoLite*/GeoLite2-City.mmdb geoLite2-City.mmdb ; rm -r GeoLite* geoip* '
                 )
-                # reader对象用以ip2coord
+                
             reader = geoip2.database.Reader(path_db)
-                # geolocator对象用以 coord2city
             geolocator = Bing(api_key='Ag7S7BV4AkTdlUzzm_pgSZbQ9c_FBf9IbvSnSlui2x-kE6h-jnYKlT7EHYzRfxjC')
-                # 坐标池，用以加速coord2city, 经纬度是key, 城市名是value
             coord_city_dic= {}
             for ip in IPs:
                 response = reader.city(ip)
@@ -101,7 +99,7 @@ class CommonTool(object):
                 cityName = response.city.name
                 if cityName!= None:
                     cityName+= ','+ response.country.name
-                else:     #改用Bing map api来求。
+                else:     
                     if (latitude, longitude) not in coord_city_dic:
                         location = geolocator.reverse((latitude, longitude))
                         cityName= ' '
@@ -110,7 +108,7 @@ class CommonTool(object):
                                 cityName = location.raw['address']['adminDistrict2']+ ', '+ location.raw['address']['countryRegion']
                             except:
                                 cityName = location.address
-                        time.sleep(0.15)     # Bing map API限速
+                        time.sleep(0.15)     
                         coord_city_dic[(latitude, longitude)]= cityName
                     else:
                         cityName= coord_city_dic[(latitude, longitude)]
@@ -121,9 +119,25 @@ class CommonTool(object):
             reader.close()
             return res
 
-    
+    @staticmethod
+    def cal_geo_dist(lat1, lon1, lat2, lon2):
+        '''
+        - description: 计算两坐标地理距离
+        '''
+        import math
+        R = 6371
+        dLat = math.radians(lat2 - lat1)
+        dLon = math.radians(lon2 - lon1)
+        lat1 = math.radians(lat1)
+        lat2 = math.radians(lat2)
+        a = math.sin(dLat/2) * math.sin(dLat/2) + math.sin(dLon/2) * math.sin(dLon/2) * math.cos(lat1) * math.cos(lat2)
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        distance = R * c
+        return distance
+
+
 class PeersData(object):
-    '''收集RIPE-NCC和RouteViews项目中的peers信息, 用于观察peers分布等'''
+    '''收集RIPE-NCC和RouteViews项目中的peers信息'''
 
     @staticmethod
     def fromRV():
@@ -135,7 +149,7 @@ class PeersData(object):
             - `http://archive.routeviews.org/`数据库展示了37个采集点
                 - 不包括`route-view`
                 - 包括`route-views6`和6个新增点`jinx,saopaulo,seix,mwix,bdix,ny`
-            - 当前函数仅收录31个采集点，即`32 - route-views6`, 因为那个点只含peerIP-v6
+            - 当前函数仅收录31个采集点，因为'route-views6'只含peerIP-v6
         - return {dict}: `{ collector: {ip1: {'asn':, 'ip':, 'v4_pfx_cnt': }, ip2: {},...}, ...}`
         - return {list}: `[ip, ...]`
         '''
@@ -151,7 +165,6 @@ class PeersData(object):
         for row in rawList:                       
             rowlist= row.split()
             if ':' in rowlist[2]:   
-                # 把peerIP-v6排除
                 continue
             
             collector= re.search('.*(?=.routeviews.org)', rowlist[0]).group()
@@ -192,8 +205,7 @@ class PeersData(object):
     @staticmethod
     def get_peers_info(path_out= 'peers_info.json'):
         '''
-        - description: 获取所有peers的信息. 
-        - 结果存储在`./peers_info.json`
+        - description: 获取所有peers的信息, 结果存储在`./peers_info.json`
         - return {dict}: `{ 'rou': [{'asn', 'ip', 'v4_prefix_count', 'longitude', 'latitude', 'collector'}, {}, ...],
                             'rrc': [...] }`
         '''
@@ -205,7 +217,6 @@ class PeersData(object):
         res={}
         for data in (rv_info, rc_info):
             cur_res= []
-            # 3. 把坐标属性并入peer字典
             for rrc, rrc_dic in data.items():
                 for ip, peer_dic in rrc_dic.items():
                     peer_dic['latitude']=  ip_map[ip][0]
@@ -214,8 +225,6 @@ class PeersData(object):
                     peer_dic['collector']= rrc
                     cur_res.append(peer_dic)
 
-            # 4. 并入颜色属性到字典
-                # 下标对应采集点的编号
             colors = [
                 '#1F75FE', '#057DCD', '#3D85C6', '#0071C5', '#4B86B4',
                 '#17A589', '#52BE80', '#2ECC71', '#00B16A', '#27AE60',
@@ -225,7 +234,7 @@ class PeersData(object):
                 '#F1C40F', '#FFD700', '#F0E68C', '#FFA07A', '#FFB900',
                 '#555555', '#BDC3C7', '#A9A9A9', '#D3D3D3', '#808080'
             ]
-                # 把采集点名字映射为下标
+            
             collector2idx= { val: idx for idx, val in enumerate( list(data.keys())) }
             for peer in cur_res:
                 peer['color']= colors[collector2idx[ peer['collector'] ]]
@@ -233,7 +242,6 @@ class PeersData(object):
             key= list(data.keys())[0][:3]
             res[ key]= cur_res
 
-        # 5. 导出
         with open(path_out, 'w') as f:
             json.dump(res, f)
         logger.info( f"rrc: {len( res['rrc'])} peers.\nrou: {len( res['rou'])} peers.\n### all peers info stored at `{path_out}`")
@@ -243,15 +251,14 @@ class PeersData(object):
     @staticmethod
     def get_rrc_info(path_in= './peers_info.json', path_out= 'peers_info_about_collector.csv'):
         '''
-        - description: 获取每个rrc的peers数量、城市列表. 这是对`get_peers_info()`输出的汇总。
+        - description: 获取每个rrc的peers数量、城市列表
         '''
         if not os.path.exists(path_in):
             PeersData.get_peers_info()
         with open(path_in) as f:
             datas= json.load(f)
         datas= datas['rou']+ datas['rrc']
-
-        # 得到每个rrc所在城市的列表
+        
         rrc_city= {}
         rrc_count= []
         for dic in datas:
@@ -263,13 +270,12 @@ class PeersData(object):
                 if dic['cityName']!= ' ':
                     rrc_city[dic['collector']].append( dic['cityName'])
 
-        # 得到RRC的规模（拥有多少peer）
         peer_num_in_RRC= pd.value_counts(rrc_count).sort_index().to_frame()
-        # 得到RRC的城市的去重列表
+        
         for rrc, city_lis in rrc_city.items():
             rrc_city[rrc]= [str(set(city_lis))]
         rrc_city_pd= pd.DataFrame(rrc_city).T
-        # 合并上述两列
+        
         res= pd.concat([peer_num_in_RRC, rrc_city_pd], axis=1)
         res.to_csv(path_out, header=['peer_num', 'cities'])
 
@@ -297,14 +303,9 @@ class PeersData(object):
         with open(path_out,'w') as f:
             json.dump(data_all, f)
 
-    #TODO: 针对两个项目中为公开peers的采集点，如何得到其peers和相应的地理信息？
-    #       考虑从采集点的RIB表中收集。
-    def get_peers_from_rib(rib_path):
-        pass
-
     @staticmethod
     def peerAS2country(project= 'rrc', p= './peers_info.json'):
-        '''- 获取每个国家的peers数量。可用于量化‘peers在欧美与非欧美国家间分布严重不均匀’'''
+        '''- 获取每个国家的peers数量'''
         if not os.path.exists(p):
             PeersData.get_rrc_info()
         with open(p) as f:
@@ -320,12 +321,41 @@ class PeersData(object):
     
     @staticmethod
     def _get_country_name(code):
-        '''-input国家代码; output国家名'''
+        '''-input国家代码, output国家名'''
         try:
             country = pycountry.countries.get(alpha_2=code)
             return country.name
         except:
             return None
+
+    @staticmethod
+    def get_peers_distance_DF(path= './peers_info.json', df_out_path= './peers_distance_each_other.csv'):
+        '''
+        - description: 计算peers两两之间的地理距离
+        - `peers_info.json`的数据源: peerIP来自`http://www.routeviews.org/peers/peering-status.html`和`https://www.ripe.net/analyse/internet-measurements/routing-information-service-ris/archive/ris-raw-data`
+                                    坐标来自`https://ipinfo.io/{ip}`
+        '''
+        with open(path) as f:
+            data= json.load(f)
+        coords= {'asn':[], 'latitude':[], 'longitude':[]}
+        for dic in data['rou']+data['rrc']:
+            coords['asn'].append( f"AS{dic['asn']}-{dic['collector'][:3]}")
+            coords['latitude'].append( float(dic['latitude']))
+            coords['longitude'].append( float(dic['longitude']))
+
+        peer_num  = len(coords['latitude'])
+        distances = np.zeros((peer_num, peer_num))
+        for i in range(peer_num):
+            for j in range(i, len(coords['latitude'])):
+                lat1, lon1 = coords['latitude'][i], coords['longitude'][i]
+                lat2, lon2 = coords['latitude'][j], coords['longitude'][j]
+                d = CommonTool.cal_geo_dist(lat1, lon1, lat2, lon2)
+                distances[i][j] = d
+                distances[j][i] = d
+
+        df = pd.DataFrame(distances, index=coords['asn'], columns=coords['asn'])
+        df.to_csv(df_out_path, index=True)
+        return df
 
 
 #######################
@@ -342,12 +372,17 @@ class MRTfileHandler():
         - args-> project {*}: one of `RIPE, RouteViews` or None
         - return {list}
         '''
-
-        # 26个采集点
+        
         collector_list_rrc= [f'rrc{i:02d}' for i in range(27)]
         collector_list_rrc.pop(17)
-        # 38个采集点
-        collector_list_rou= ["route-views.ny","route-views2","route-views.amsix","route-views.chicago","route-views.chile","route-views.eqix","route-views.flix","route-views.fortaleza","route-views.gixa","route-views.gorex","route-views.isc","route-views.jinx","route-views.kixp","route-views.linx","route-views.napafrica","route-views.nwax","route-views.perth","route-views.phoix","route-views.rio","route-views.saopaulo","route-views.sfmix","route-views.sg","route-views.soxrs","route-views.sydney","route-views.telxatl","route-views.wide","route-views2.saopaulo","route-views3","route-views4","route-views5","route-views6","route-views.peru","route-views.seix","route-views.mwix","route-views.bdix","route-views.bknix","route-views.uaeix","route-views"]
+        
+        collector_list_rou= ["route-views.ny","route-views2","route-views.amsix","route-views.chicago","route-views.chile",
+        "route-views.eqix","route-views.flix","route-views.fortaleza","route-views.gixa","route-views.gorex","route-views.isc",
+        "route-views.jinx","route-views.kixp","route-views.linx","route-views.napafrica","route-views.nwax","route-views.perth",
+        "route-views.phoix","route-views.rio","route-views.saopaulo","route-views.sfmix","route-views.sg","route-views.soxrs",
+        "route-views.sydney","route-views.telxatl","route-views.wide","route-views2.saopaulo","route-views3","route-views4",
+        "route-views5","route-views6","route-views.peru","route-views.seix","route-views.mwix","route-views.bdix",
+        "route-views.bknix","route-views.uaeix","route-views"]
         
         if project== 'RIPE':
             return collector_list_rrc
@@ -359,7 +394,7 @@ class MRTfileHandler():
     @staticmethod
     def get_download_url(type:str, monitor:str, tarTime):
         '''
-        - description: 获取MRT文件下载链接。注意, 得到的链接可能404
+        - description: 获取MRT文件下载链接
         - args-> type {str}: any of `updates, rib, rib., ribs, bview, bview.`
         - args-> monitor {str}: 
         - args-> tarTime {str| datetime}: like `20210412.0800`
@@ -395,12 +430,12 @@ class MRTfileHandler():
         elif size_str[-1] == 'G':
             return float(size_str[:-1])*1000
         else:
-            return float(size_str)
+            return float(size_str)/10**6
     
     @staticmethod
     def _get_month_list(time_start='20210416', time_end='20210718'):
         '''- 获取指定时间段内的月份列表，如：['2021.04', '2021.05',...]'''
-        
+        t1= time.time()
         # Convert the start and end dates to datetime objects
         start_date = datetime.strptime(time_start[:8], '%Y%m%d')
         end_date = datetime.strptime(time_end[:8], '%Y%m%d')
@@ -412,16 +447,21 @@ class MRTfileHandler():
             if month not in month_list:
                 month_list.append(month)
             start_date += timedelta(days=1)
+        print(f"time cost for getting `months_list`: {(time.time()-t1):.1f} s")
         return month_list
 
     @staticmethod
-    def _get_collector_file_size(collector, month_list) -> dict:
+    def _get_collector_file_size(collector, month_list=None) -> dict:
         '''
         - description: 从一个collector获取指定`月份`内的`MRT file size`的变化
         - args-> collector {str}: 
         - args-> month_list {list}: from `_get_month_list()`
-        - return {dict}: like: {collector: {'20210401.0000': '6M', '20210401.0005': '5M',...} }, value可能为空
+        - return {dict}: like: {collector: {'20210401.0000': '6M', '20210401.0005': '5M',...} }, value可为空
         '''
+        if not month_list:
+            collector, month_list= collector
+            month_list= [month_list]
+            
         diveded_map={'rrc':5, 'rou':15}
         pattern_dir={
             'rrc': r'href="updates\.(\d{8}\.\d+)\.gz.*:\d\d\s*(\d+\.?\d*[MKG]?)\s*', 
@@ -438,45 +478,68 @@ class MRTfileHandler():
                 else:
                     url= f'http://archive.routeviews.org/{collector}/bgpdata/{month}/UPDATES/'
 
-            pageInfo= requests.get(url).text
-            matches= re.findall(pattern_dir[collector[:3]], pageInfo)
-            for time, size in matches:
-                # 很烦心的一个事：两个数据集中的时间格式并不是完全按照每5/15分钟一跳来存储MRT文件的。
-                # 在此我通过删除不能被5/15整除的时间，来简单地排除异常。
-                if int(time[-2:])% diveded_map[collector[:3]] ==0:
-                    res_dic[time]= size
+            try:
+                respon= requests.get(url, timeout= 4)
+                if respon.status_code==200:
+                    pageInfo= respon.text
+                else:
+                    print(f'请求失败: {collector}--> {url}')
+            
+                matches= re.findall(pattern_dir[collector[:3]], pageInfo)
+                for time, size in matches:
+                    if int(time[-2:])% diveded_map[collector[:3]] ==0:
+                        res_dic[time]= size
+            except Exception as e:
+                print(f'请求异常：{collector}--> {e}')
 
-        #logger.info(f'* * done: {collector}')
+        # print(f'* * done: {collector}')
         return {collector: res_dic}
 
     @staticmethod
-    def _get_collectors_file_size(time_start='20211004.1200', time_end=None, project=None):
+    def _get_collectors_file_size(time_start='20211004.1200', time_end=None, project=None, custom_rrcs= None):
         '''
         - description: 并行使用`_get_collector_file_size`。返回值排除了空数据的采集点。
         - args-> project {str}: either-or of 'RouteViews' and 'RIPE'
+        - args-> custom_rrcs {list}: 自定义采集点列表
         - return {dict}: `{'rrc': DF(collectors* dates), 'rou': ~same~}`
         '''
         if time_end==None:
             time_end= time_start
-        proj_map  = {'RouteViews': MRTfileHandler.collector_list('RIPE'), 'RIPE': MRTfileHandler.collector_list('RouteViews')}
-        collector_list= proj_map[project] if project else proj_map['RIPE']+ proj_map['RouteViews']
+        proj_map  = {'RouteViews': MRTfileHandler.collector_list('RouteViews'), 'RIPE': MRTfileHandler.collector_list('RIPE')}
+        if custom_rrcs:
+            collector_list= custom_rrcs
+        else:
+            collector_list= proj_map[project] if project else proj_map['RIPE']+ proj_map['RouteViews']
         month_list= MRTfileHandler._get_month_list(time_start, time_end)
+        
+        from tqdm import tqdm
+         
+        with Pool(processes=50) as pool:
+            total = len(collector_list)* len(month_list)
+            candi_list= [(c, m) for c in collector_list for m in month_list ]
+            desc = 'Processing collector files'
+            results = list(tqdm(pool.imap(MRTfileHandler._get_collector_file_size, candi_list), total=total, desc=desc))
 
-        # 并行获取每个collector的数据
-        with Pool(processes = 54) as pool:
-            results= pool.map(partial(MRTfileHandler._get_collector_file_size, month_list= month_list), collector_list)
-
-        # 处理汇总数据
         res= {}
         res_rrc= {}
         res_rou= {}
         for r in results:
-            if 'rrc' in list(r.keys())[0]:
-                res_rrc.update(r)
+            rrc_name= list(r.keys())[0]
+            if 'rrc' in rrc_name:
+                if rrc_name in list(res_rrc.keys()):
+                    res_rrc[rrc_name].update( r[rrc_name])
+                else:
+                    res_rrc.update(r)
             else:
-                res_rou.update(r)
+                if rrc_name in list(res_rou.keys()):
+                    res_rou[rrc_name].update( r[rrc_name])
+                else:
+                    res_rou.update(r)
+                    
         for dic in [res_rou, res_rrc]:
-            # 压缩日期到数天，并统一单位
+            if dic=={}:
+                continue
+            
             df= pd.DataFrame(dic )#.astype(str)
             df.sort_index()
             df.index = pd.to_datetime(df.index, format='%Y%m%d.%H%M')
@@ -506,9 +569,15 @@ class MRTfileHandler():
         return res
 
     @staticmethod
-    def draw_collectors_file_size(eventName='', time_start='20211004.1200', time_end=None, event_period=None):
+    def draw_collectors_file_size(eventName='', 
+        time_start='20211004.1200', 
+        time_end: str=None, 
+        event_period: tuple=None,
+        project: str= None,
+        custom_rrcs: list= None
+        ):
         '''
-        - description: 画图对比各采集点的`file_size`走势。有图像导出。
+        - description: 画图对比各采集点的`file_size`走势
         - args-> data {*}: all of values returned by `_get_collectors_file_size()`
         - args-> event_period {`('20211004.1200', '20211004.1200')`}: 当需要在图中作异常区间阴影时使用
         - return {*}
@@ -516,7 +585,7 @@ class MRTfileHandler():
         if time_end== None:
             time_end= time_start
         #if not data:
-        data= MRTfileHandler._get_collectors_file_size(time_start, time_end)
+        data= MRTfileHandler._get_collectors_file_size(time_start, time_end,project= project, custom_rrcs= custom_rrcs)
         
         for project, df in data.items():
             #size_map= {'RIPE': 23, 'RouteViews': 32}
@@ -525,9 +594,9 @@ class MRTfileHandler():
             utils.makePath(f'plot_file_sizes/{title}')
             ax= df.plot( # y=df.columns[3],
                     figsize=(10, df.shape[1]),
-                    subplots=True
+                    subplots=True 
             )
-            # 有并列子图时的造阴影
+            
             if event_period != None:
                 sat= datetime.strptime(event_period[0], '%Y%m%d.%H%M')
                 end= datetime.strptime(event_period[1], '%Y%m%d.%H%M')
@@ -553,7 +622,6 @@ class MRTfileHandler():
             data= MRTfileHandler._get_collectors_file_size(time_start, time_end)
         res= pd.Series()
         for project, df in data.items():
-            # 计算峰度
             kurt = df.apply(kurtosis)
             score = (10 * (kurt - kurt.min()) / (kurt.max() - kurt.min())).sort_values(ascending=False)
             res= pd.concat([res, score])
@@ -561,8 +629,8 @@ class MRTfileHandler():
         return res, data
 
 class DownloadParseFiles():
-    '''- 简单场景下的MRT文件的下载和解析操作, 含2种模式。'''
-    def __init__(self, mode= 'all', time_str= '20230228.0000', time_end= None, coll= None, target_dir= os.getcwd(), core_num= 40) -> None:
+    '''- 简单场景下的MRT文件的下载和解析'''
+    def __init__(self, mode= 'a', time_str= '20230228.0000', time_end= None, coll= None, target_dir= './raw_data/', core_num= 60) -> None:
         ''' 
         - args-> mode {'all'/'a'}: 
             - `all`: 所有采集点模式，用于下载并解析`指定时刻time_str`的`所有采集点`的(rib)表；
@@ -570,8 +638,8 @@ class DownloadParseFiles():
         - args-> time_str {*}: 
         - args-> time_end {*}: 当mode='a'时有效
         - args-> coll {*}: 当mode='a'时有效
-        - args-> target_dir {*}: cwd
-        - args-> core_num {*}: 默认40核
+        - args-> target_dir {*}: 
+        - args-> core_num {*}: 默认60核
         '''
         self.mode= mode
         self.time_str= time_str
@@ -605,7 +673,7 @@ class DownloadParseFiles():
         return url_list
 
     def _download_file(self, queue, urls:list):
-        '''- 生产者: 下载所有urls, 将下载后的路径存入queue'''
+        ''''''
         for url in urls:
             # 先判url有效性
             response = requests.head(url).status_code
@@ -618,10 +686,10 @@ class DownloadParseFiles():
                 queue.put(output_file)
 
     def _parse_file(self, queue):
-        '''- 消费者: 解析queue中的数个file, 返回其路径列表'''
+        ''''''
         target_files=[]
-        while True:     # 即只要队列中还有元素，则该消费者子进程持续执行
-            source = queue.get()    # 当queue中没有元素，则会一直空转等待元素。
+        while True:      
+            source = queue.get()     
             if source== None:
                 break
             output_file= self.p_pars+ os.path.basename(source)+ '.txt'
@@ -632,17 +700,15 @@ class DownloadParseFiles():
 
     #@utils.timer
     def run(self):
-        '''- return {list}: 解析后的所有路径
-        '''
+        
         t1= time.time()
         url_list= self._get_url_list()
-        queue= multiprocessing.Manager().Queue()    # 要用可在进程间共享的队列
+        queue= multiprocessing.Manager().Queue()     
         cores_p= self.core_num//2
         cores_c= self.core_num//2
         pool1 = multiprocessing.Pool(processes=cores_p)
         pool2 = multiprocessing.Pool(processes=cores_c)
         
-        # 生产者
         sub_set_size= round( len(url_list)/ cores_p )
         for i in range(cores_p):
             if i+1== cores_p:
@@ -652,7 +718,6 @@ class DownloadParseFiles():
             pool1.apply_async( self._download_file, (queue, sub_set))
         pool1.close()
 
-        # 消费者
         print("has parsed files:")
         with tqdm.tqdm(total= len(url_list), dynamic_ncols= True) as pbar:            
             results= []
@@ -663,11 +728,9 @@ class DownloadParseFiles():
                 results.append(res)
             pool1.join()
 
-                # 添加迫使消费者结束的哨兵
             for i in range(cores_c):
                 queue.put(None)
 
-            # 等待任务完成并更新进度条
             while len(results)>0:
                 for i in range(len(results)):
                     r= results[i]
@@ -691,14 +754,11 @@ class DownloadParseFiles():
         return real_res
 
 class COmatrixPfxAndPeer():
-    ''' - 从所有采集点的rib表获取全局 prefix和peer_AS的共现矩阵，以得到各peer的视野大小，判断其在全球路由收集中的重要性。
-        - 前提：用`DownloadParseFiles`类下载解析全局rib表。
-        - 另：通过共现矩阵pl.df查看peerAS的视野排名:`a= df[:,1:].sum().to_pandas().T.rename(columns={0: 'pfx_num'}).sort_values('pfx_num', ascending=False)`
+    ''' - 从所有采集点的rib表获取全局 prefix和peer_AS的共现矩阵
     '''
     @staticmethod
     def _COmatrix_a_rib(path):
-        '''- 获取一张路由表中的pfx-peer_AS共现矩阵 & originAS-peer_AS共现矩阵'''
-        # 被并行的函数一定要try,不然一个断，所有进程都断了
+        
         try:
             t1= time.time()
             #logger.info('start one rib...')
@@ -706,10 +766,8 @@ class COmatrixPfxAndPeer():
             df.columns= utils.raw_fields
 
             df['mask']= pl.Series([True]* df.shape[0])
-            # 获取pfx-peer_AS共现矩阵
             pfx_2_peer= df.pivot(values='mask', index='dest_pref', columns='peer_AS').fill_null(False)
             
-            #  获取originAS-peer_AS共现矩阵（可得到：一个peer在AS层面的视野范围；一个AS能被多少个peer观察到）
             oriAS_2_peer= (df.select(['peer_AS', pl.col('path').str.split(' ').arr.last().alias('origin_AS'), 'mask'])
                             .pivot(values='mask', index= 'origin_AS', columns='peer_AS').fill_null(0))
             
@@ -722,11 +780,7 @@ class COmatrixPfxAndPeer():
 
     @staticmethod
     def _COmatrix_post_handler(df_list: List[pl.DataFrame], out_path):
-        '''
-        - description: 合并和处理各个采集点上得到的pfx2peer/ oriAS2peer共现矩阵。
-        - args-> df_list {*}: 共现df列表
-        - return {*}
-        '''
+        
         DF= df_list[0]
         index_tag= DF.columns[0]
         for id, df in enumerate(df_list[1:]):
@@ -735,7 +789,6 @@ class COmatrixPfxAndPeer():
                 DF= DF.join(df, on= index_tag, how= 'outer')
         DF= DF.fill_null(False)
         
-        # 此时DF的情况：行上需区分v4,v6; 列上需合并AS号相同的peer
         ASset= set()
         cols= DF.columns[1:]
         for col in cols:
@@ -744,11 +797,8 @@ class COmatrixPfxAndPeer():
                 ASset.add(curAS)
                 DF= DF.rename({col: curAS})
             else:
-                DF[curAS]= DF[curAS]| DF[col]     # bool或运算
+                DF[curAS]= DF[curAS]| DF[col]      
                 DF= DF.drop(col)
-
-        #DF_v4= DF.filter(pl.col(index_tag).str.contains(':')== False)
-        #DF_v6= DF.filter(pl.col(index_tag).str.contains(':'))
         DF.select([
             pl.col('dest_pref'),
             pl.exclude('dest_pref').cast(pl.Int8)
@@ -756,12 +806,9 @@ class COmatrixPfxAndPeer():
 
     @staticmethod
     def get_pfx2peer_COmatrix_parall(ribs_dir='/data/fet/ribs_all_collector_20230228.0000/parsed/',out_path= './COmatrix/', processes=4):
-        ''' - 输入各个采集点rib文件的列表, 获取pfx2peer/ oriAS2peer共现矩阵
-        # TODO: 考虑改用` https://publicdata.caida.org/datasets/as-relationships/serial-1/20230301.as-rel.txt.bz2`
-        '''
+        
         utils.makePath(out_path)
         paths= sorted(glob.glob(ribs_dir+'*'))
-        #paths= [paths[8],paths[13],paths[14],paths[4]]
         
         with Pool(processes=processes) as pool: 
             results=[]
@@ -776,14 +823,27 @@ class COmatrixPfxAndPeer():
         COmatrixPfxAndPeer._COmatrix_post_handler(p2p_list, out_path+'COmatrix_pfx_2_peer.csv')
         COmatrixPfxAndPeer._COmatrix_post_handler(o2p_list, out_path+'COmatrix_oriAS_2_peer.csv')
         logger.info(f"ENDING: COmatrix about prefix and peer. result path: `{out_path}`")
+    
+    @staticmethod
+    def peers_rank_from_COmat():
+        '''- 计算全球peerAS的视野排名'''
+        zz= PeerSelector._get_existing_COmat()
+
+        df= (zz.sum().to_pandas().T
+            .drop('dest_pref')
+            .reset_index()
+            .rename(columns={'index': 'peerAS', 0: 'count'})
+            .sort_values('count', ascending=False, ignore_index=True)
+        )
+        df['percent']= df['count'].apply(lambda x: '{:.2%}'.format(x/zz.shape[0]))
+        return df
+
 
 class PeerSelector():
-    '''- 用于选择最佳peer'''
+    '''- 从rib表得到peers列表'''
 
-    # 来自COmatrixPfxAndPeer类
     @staticmethod
-    def _get_existing_COmat():
-        '''- 拿到共现矩阵'''
+    def _get_existing_COmat():        
         try:
             df= pl.read_csv('/data/fet/ribs_all_collector_20230228.0000/COmatrix/COmatrix_pfx_2_peer.csv')
         except:
@@ -793,23 +853,21 @@ class PeerSelector():
     
     @staticmethod
     def _df2graph(df= None):
-        '''- 由 df['peer_AS', 'dest_pref','path'] 生成带权有向图.
-        - 效率：操作97万行的df耗时10s, 3s拿到边集合, 7s造图 '''
         all_edge= ( df
             .groupby([ 'peer_AS', 'dest_pref' ])
-                .tail(1)    # rib表中一个peer-pfx下还有多条路由，说明这个peerAS有多个peerIP，只保留一条路由即可。当然这不算严谨，可能会失去一些边关系。
+                .tail(1)     
                 .drop_nulls()
                 .select([
                 #pl.col('dest_pref'),
                 pl.col('path').str.split(' ').alias('path_list_raw'),
                 pl.col('path').str.split(" ").arr.shift( -1 ).alias('path_list_sft')
             ])
-            .explode( ['path_list_raw', 'path_list_sft'] )  # 2列展开
+            .explode( ['path_list_raw', 'path_list_sft'] )   
             .filter( (pl.col('path_list_sft') != None)&
                     (pl.col('path_list_raw') != pl.col('path_list_sft')) &
                     (~pl.col('path_list_sft').str.contains('\{'))
-                    )       # 自此，每行的2列就是拓扑图中一个边的连接关系。 
-            # .unique()       # 去重效果：去重前274万边，去重后11万边。这是因为不同路由(pfx)间有大量重复的边，特别是tier-1与运营商之间
+                    )        
+             
         ).to_numpy()
 
         G = nx.DiGraph()
@@ -821,14 +879,13 @@ class PeerSelector():
             else:
                     weights[(u, v)] = 1
                     G.add_edge(u, v, weight=1)        
-        # 更新边的权重
+         
         for u, v, w in G.edges(data='weight'):
             G[u][v]['weight'] = weights[(u, v)]
         return G
 
     @staticmethod
     def _greaterthan_avg_degree(G: nx.Graph):
-        '''- 获取`大于平均度(3种)的节点数量`'''
         _df=pd.DataFrame({    
                             'gp_nb_nodes_gt_avg_tol_degree': dict(G.degree),
                             'gp_nb_nodes_gt_avg_out_degree': dict(G.out_degree()), 
@@ -839,37 +896,25 @@ class PeerSelector():
 
     @staticmethod
     def _simple_feats_graph(G: nx.Graph, source_peer):
-        '''- 获取图的一个特征字典'''
-        # 数据准备：
+        ''''''
         #Gsub, _= GraphBase.get_subgraph_without_low_degree(G)  
 
-        # 特征集合1：无需k核子图就能即时获取的
         res1= {
-            # 全图特征
-            'gp_nb_of_nodes':       len(G.nodes),           # 节点数
-            'gp_nb_of_edges':       len(G.edges),           # 边数
-            'gp_density':           nx.density(G),          # 密度
+            'gp_nb_of_nodes':       len(G.nodes),            
+            'gp_nb_of_edges':       len(G.edges),            
+            'gp_density':           nx.density(G),   
 
-            # 节点平均特征
-                ## 度相关
-            'nd_degree':            graphInterAS.avgNode(G.degree),        # 平均度
-            'nd_in_degree':         graphInterAS.avgNode(G.in_degree),   # 平均入度
-            'nd_out_degree':        graphInterAS.avgNode(G.out_degree),  # 平均出度
-            'nd_degree_centrality': graphInterAS.avgNode(nx.degree_centrality, G),   # 平均度中心性
-            'nd_pagerank':          graphInterAS.avgNode(nx.pagerank, G)
-            
-            # 混合特征：同时涉及全图特征、节点平均特征
-            
+            'nd_degree':            graphInterAS.avgNode(G.degree),         
+            'nd_in_degree':         graphInterAS.avgNode(G.in_degree),    
+            'nd_out_degree':        graphInterAS.avgNode(G.out_degree),   
+            'nd_degree_centrality': graphInterAS.avgNode(nx.degree_centrality, G),    
+            'nd_pagerank':          graphInterAS.avgNode(nx.pagerank, G)            
         }
-        # 特征集合2：需要K核子图才能即时获取(<1s)
+
         res2= {
-            # 
-            
-            #
             #'nd_clustering':            graphInterAS.avgNode(nx.clustering, Gsub),
             #'nd_closeness_centrality':  graphInterAS.avgNode(nx.closeness_centrality, Gsub),
             #'nd_eigenvector_centrality':graphInterAS.avgNode(nx.eigenvector_centrality, Gsub),
-            #
         }
         
         res3= PeerSelector._greaterthan_avg_degree(G)
@@ -882,15 +927,15 @@ class PeerSelector():
 
     @staticmethod
     def select_peer_from_a_rib(path_or_df, method= 'simple'):
-        '''- 从一个rib表中选出最佳的peer, 以致最小的路由数来构建全局拓扑
+        '''- 从一个rib表中选出最佳的peer
             - args-> path_or_df {`str | pl.df`}: 
             - args-> method
-                - 当为默认值，最佳peer = 能观察到pfx的数量的peer
-                - 当为其他值，需对每个peer下的路由提取信息，分别做全球AS拓扑图，
-                根据图的属性等获取评分，分最高的peer最佳
+                - 当为默认值，最佳peer = 能观察到pfx的数量的peer（即视野）
+                - 当为其他值，需对每个peer下的路由提取信息，分别做全球AS拓扑图，根据图的属性等获取评分，分数最高的peer最佳
             - return {list}: idx=0处的peer最佳
+            - 其他方法：调用`ripeAPI.full_table_peer_list`直接获取。
         '''
-        if isinstance(path_or_df, str): # 已经解析好的rib表
+        if isinstance(path_or_df, str):  
             df= utils.csv2df(path_or_df).select(['peer_AS', 'dest_pref', 'path'])
         else:
             df= path_or_df.select(['peer_AS', 'dest_pref', 'path'])
@@ -900,53 +945,45 @@ class PeerSelector():
             .sort('dest_pref', reverse=True)[:,0])
         
         if method== 'simple':
-            return peer_list
-        else:
+            return peer_list     
+        else:    
             #COmat= PeerSelector._get_existing_COmat()
             result= {}
-            for cur_peer in peer_list:  ####for
+            for cur_peer in peer_list:   
                 newdf= df.filter(pl.col('peer_AS')== cur_peer)
                 G= PeerSelector._df2graph(newdf)
                 #Gsub,_= GraphBase.get_subgraph_without_low_degree(G)
 
                 cur_res= {
-                    # peer的视野（能观察到pfx的数量）
-                    #'peer_vision': COmat[str(cur_peer)].sum() if COmat else 0,
                     'peer_vision': newdf['dest_pref'].unique().shape[0],
                     'num_route':   newdf.shape[0],}
                 cur_res.update( PeerSelector._simple_feats_graph(G, cur_peer) )
                 result[cur_peer]= cur_res
                 print(f'done: {cur_peer}')
 
-            # 获取这张路由表中，每个peer的评分
             dfscore = pd.DataFrame(result)
             dfscore = pd.DataFrame(MinMaxScaler().fit_transform(dfscore.T).T, columns=dfscore.columns)
             dfscore = dfscore.sum()
             print(f"{dfscore=}")
 
             return dfscore.idxmax()
-
-
+ 
 #######################
-# 提取特征前，预处理原始消息。因为‘路由波动造成的无效波峰’影响时序曲线的正常表达
+# 提取特征前，预处理原始消息
 #######################
 
-class UpdsMsgPreHandler():
-    '''- 提取特征前，预处理原始消息。因为‘路由波动造成的无效波峰’影响时序曲线的正常表达
+class   UpdsMsgPreHandler():
+    '''- 提取特征前，预处理原始消息
     '''
-
     @staticmethod
-    def pfx_oriAS_mapping_from_rib(rib_path= ''):
+    def pfx_oriAS_mapping_from_global_rib(rib_path= ''):
         '''
         - description: 从一张rib表获取完整的全球prefix与originAS的映射。一般选取rrc00的最新rib表。
         - args-> rib_path {path or url}: 
-            - 默认为(2G): `'https://data.ris.ripe.net/rrc00/latest-bview.gz'`
-            - 也可用RIB汇总表(5G): `https://publicdata.caida.org/datasets/as-relationships/serial-1/20230301.all-paths.bz2`
-        - 注：默认下当rib表5800万行，耗时 30~40s
-        - return {`pl.df['pfx', 'originAS']`}: 一般地, pfx有100万左右; oriAS有7.7万左右。
+            - 默认为: `'https://data.ris.ripe.net/rrc00/latest-bview.gz'`
+            - 也可考虑RIB汇总表(过大, bgpdump无法解析): `https://publicdata.caida.org/datasets/as-relationships/serial-1/20230301.all-paths.bz2`
         '''
         if rib_path=='' or rib_path.startswith('http'):
-            # 下载，解析非常耗时
             if rib_path=='':
                 url= 'https://data.ris.ripe.net/rrc00/latest-bview.gz'
             else:
@@ -955,65 +992,441 @@ class UpdsMsgPreHandler():
             rib_path= os.getcwd()+'/'+ base_name+ '.txt'
             os.system(f"time wget {url}; time bgpdump -m {base_name} > {rib_path}; rm {base_name}")
                     
-        # 20s, 读取
         df= utils.csv2df(rib_path)[['peer_AS', 'dest_pref', 'path']]
-        # 20s, 找到视野最大的peerAS
+        num_peer= df['peer_AS'].unique().shape[0]
+        num_pfx = df['dest_pref'].unique().shape[0]
+        print(f"在{rib_path}中, 有{num_peer}种peerAS, 有{num_pfx}种前缀。")
+        
         max_peer= (df.groupby('peer_AS').agg(pl.col('dest_pref').unique().count())
             .sort('dest_pref', reverse=True)[0,0])
-        # 1s, 拿到pfx和oriAS
+        
         df= (df.filter((pl.col('peer_AS')== max_peer))
                 .groupby('dest_pref').agg(
                     pl.col('path').last().str.split(' ').arr.last()
                 )
                 .sort('dest_pref', reverse=False)
                 .rename({'dest_pref':'pfx', 'path':'originAS'})
-                .filter(~(pl.col('originAS').str.contains('\{')))    # 过滤掉`{ASN}`的特殊情况
+                .filter(~(pl.col('originAS').str.contains('\{')))
         )
         return df
 
+    ## main steps
     @staticmethod
-    def del_useless_updmsg():
-        '''
-        - description: 删除无用的宣告消息。何为无用：属于路由波动的条目
-        - method: 
-            - 以每分钟为最小单元来判断upds中是否有`波动路由`
+    def peers_select_by_updates(df, topN=12):
+        
+        peerIP_rank= df.groupby('peer_IP').agg(pl.col('dest_pref').unique().count()).sort('dest_pref', reverse=True).to_pandas()#['peer_IP'][0]
+        peers_reserved= peerIP_rank['peer_IP'].tolist()[:topN]
+        df= df.filter(pl.col('peer_IP').is_in(peers_reserved))
+        return df
 
-        - return {*}
+    def find_peak(df:pl.DataFrame, coef_std= 3, coef_mean= 1, changepoint_prior_scale= 0.05):
         '''
-        pass
+        - description: 定位疑似异常峰点, 并绘图查看峰点。
+        - args-> df {}: 原始路由消息
+        - args-> coef_std {*}: `prophet超参数`, 标准差的权重，用于设置异常点阈值
+        - args-> coef_mean {*}: `prophet超参数`, 均值的权重，用于设置异常点阈值
+        - args-> changepoint_prior_scale {0-100}: `prophet超参数`, 针对预测曲线 控制算法中的拐点数量和位置的灵活性。
+                该参数越小，算法越趋向于学习平滑的拟合曲线，越大则趋向于学习波动较大的拟合曲线。
+        - return : 
+            - df {pl}: 筛选后的原始df
+            - {dict} key：`count`被判定为异常的行号/分钟序号
+            - {dict} value：`count`被判定为异常时，prophet模型的预测值
+        '''
+        from prophet import Prophet
+        event_timestamp= df[0, 'timestamp']
+        df_out= RawMrtDataAnaly(df).df
+        df= ( df_out
+            #.filter(
+            #    ( pl.col('time_bin')>=0)
+            #    &( pl.col('time_bin')<500)
+            #)
+            .groupby('time_bin', maintain_order=True).agg([
+                pl.col('timestamp').first().apply( lambda x: datetime.fromtimestamp(x, tz= timezone.utc).strftime('%Y/%m/%d %H:%M')).alias('date'),
+                pl.col('timestamp').count().alias('count')
+            ])
+            .select(pl.exclude('time_bin'))
+            .to_pandas()#.loc[:100]
+        )
 
+        cols= df.columns
+        df = df.rename(columns={cols[0]: 'ds', cols[1]: 'y'})
+        df['ds']= pd.to_datetime(df['ds'], infer_datetime_format=True)
+
+        model = Prophet(changepoint_prior_scale= changepoint_prior_scale)
+        model.fit(df)
+
+        future = model.make_future_dataframe(periods=2, freq='min')
+        forecast = model.predict(future)
+        
+        forecast_yhat= forecast['yhat'][:len(df)]
+        #df['error'] = np.abs(df['y'] - forecast_yhat)
+        df['error']= df['y'] - forecast_yhat
+        std = df['error'].std()
+        mean = df['error'].mean()
+        
+        threshold = coef_std * std + coef_mean * mean
+        
+        anomalies = df[df['error'] > threshold]
+
+        fig = plt.figure(figsize=(8, 6)) 
+        plt.plot(df['ds'], df['y'], color='black', label='Original')
+        plt.plot(forecast['ds'], forecast['yhat'], color='black', linestyle='--', label='Predicted')
+        plt.scatter(anomalies['ds'], anomalies['y'], color='grey', marker='x', label='Candidates')
+        plt.legend(loc='best')
+        plt.xlabel('Time', fontsize=12)
+        plt.ylabel('Number of messages', fontsize=12)
+        plt.xticks(fontsize=10)
+        plt.yticks(fontsize=10)
+        plt.ylim(bottom=0)
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.gca().spines['top'].set_visible(False)
+        plt.gca().spines['right'].set_visible(False)
+        plt.show()
+
+        p = f'./draw_abnormal_points_with_prophet_{event_timestamp}.png'
+        plt.savefig(p, dpi=300, bbox_inches='tight')
+
+        print(f"Peak plot stored in：{p}")
+
+        row_numbers = df[df['error'] > threshold].index.tolist()
+        #diff_values = df[df['error'] > threshold]['error_with_neg'].tolist() 
+        row_yhat= forecast_yhat[df['error'] > threshold].tolist() 
+        #return {'row_nums': row_numbers, 'row_yhat': row_yhat}
+        a= zip(row_numbers, row_yhat)
+        dic_= {tup[0]:tup[1] for tup in a}
+        return df_out, dic_
+
+    def distinguish_norm_peak(df: pl.DataFrame, peak_info: dict, global_mapping: list, thd= 0.85):
+        '''- peak clipping'''
+        
+        peak_not_event=( df
+            .filter( 
+                pl.col('time_bin').is_in(list(peak_info.keys()))
+                & (pl.col('msg_type')== 'A')
+            )
+            .with_column(
+                (pl.col('dest_pref')+pl.lit(' ')+ pl.col('originAS')).alias('pfx_oriAS')
+            )
+            .groupby('time_bin', maintain_order=True).agg([
+                (pl.col('pfx_oriAS').is_in(global_mapping).sum()/pl.col('pfx_oriAS').count()).alias('ratio_old_mapping')
+            ])
+            .filter(pl.col('ratio_old_mapping')> thd)
+            ['time_bin']
+            .to_list()
+        )
+        print(f"Suspected abnormal peaks: {len(peak_info)}; Harmless peaks: {len(peak_not_event)}")
+        return peak_not_event
+
+    @staticmethod
+    def cut_peak(df:pl.DataFrame, dic_suspi, peak_not_event):
+        '''- '''
+        a=( df.filter( pl.col('time_bin').is_in(peak_not_event)   
+            # & (pl.col('msg_type')== 'A')   
+            )
+            .groupby('time_bin').apply(
+                lambda group_df: (group_df.sample( int(dic_suspi[group_df['time_bin'][0]]), shuffle=True ) )
+            ))
+        a= df.filter(~pl.col('time_bin').is_in(peak_not_event)).vstack(a)
+
+        a= a.sort('id')
+        print(f"after clipping peaks: {a.shape=}")
+        return a
+
+    @staticmethod
+    def run_cut_peak(df:pl.DataFrame, mapping_path, coef_std, coef_mean, thd):
+        '''- main func'''
+        global_mapping= UpdsMsgPreHandler.pfx_oriAS_mapping_from_global_rib(mapping_path)
+
+        df= UpdsMsgPreHandler.peers_select_by_updates(df)
+        df, dic_suspi= UpdsMsgPreHandler.find_peak(df, coef_std= coef_std, coef_mean=coef_mean)
+        lis_peak_normal= UpdsMsgPreHandler.distinguish_norm_peak(df, peak_info= dic_suspi, global_mapping=global_mapping,thd= thd)
+        df= UpdsMsgPreHandler.cut_peak(df, dic_suspi, lis_peak_normal)
+
+        df_plot= ( df
+            #.filter(
+            #    ( pl.col('time_bin')>=0)
+            #    &( pl.col('time_bin')<500)
+            #)
+            .groupby('time_bin', maintain_order=True).agg([
+                pl.col('timestamp').first().apply( lambda x: datetime.fromtimestamp(x, tz= timezone.utc).strftime('%Y/%m/%d %H:%M')).alias('date'),
+                pl.col('timestamp').count().alias('count')
+            ])
+            .select(pl.exclude('time_bin'))
+            .to_pandas()#.loc[:100]
+        )
+        df_plot['date']= pd.to_datetime(df_plot['date'], infer_datetime_format=True)
+        print('See the effect after peak shaving: ')
+        df_plot.set_index('date').plot(figsize=(8,6))
+
+        return df
+
+
+class RawMrtDataAnaly():
+    '''- 从原始updates路由数据中分析事件, 基于`pl.expr`'''
+
+    def __init__(self, df:pl.DataFrame) -> None:
+        
+        first_ts= df[0, 'timestamp']
+        self.df= (df
+            .filter(pl.col('msg_type')!= 'STATE')
+            .with_columns([
+                ((pl.col('timestamp')- first_ts)// 60).cast(pl.Int16).alias('protocol'),
+                pl.col('path').str.replace(' \{.*\}', '')
+            ])
+            .with_column(pl.col('path').str.split(' ').arr.last().alias('originAS'))
+            .rename({'protocol': 'time_bin'})
+            .with_row_count('id')
+            #.groupby('time_bin')
+        )
+        
+        full_table_peer= ripeAPI.full_table_peer_list( datetime.fromtimestamp(first_ts).strftime('%Y-%m-%dT%H:%M'))[0]
+        full_table_peer= [tup[1] for tup in full_table_peer]
+        _, peer_reserve= self.list_peers_rank()
+        
+        self.figsize= (8,6)
+        self.ts2dt_str= pl.col('timestamp').first().apply( lambda x: datetime.fromtimestamp(x, tz= timezone.utc).strftime('%Y/%m/%d %H:%M')).alias('date')
+        self.filter_dict={
+            'full-table': pl.col('peer_IP').is_in(full_table_peer),     
+            'num_gt_5pmin': pl.col('peer_IP').is_in(list(peer_reserve)), 
+        }
+
+    def _fmt_sci(self):
+        '''- set the axis'''
+        formatter = ticker.ScalarFormatter(useMathText=True)
+        formatter.set_scientific(True)
+        formatter.set_powerlimits((-2, 2))
+        return formatter
+    def _fmt_date(self, ax, str_fmt= '%dT%H'):
+        '''- set the format of date scale'''
+        date_format = DateFormatter(str_fmt)
+        date_locator = AutoDateLocator()
+        ax.xaxis.set_major_locator(date_locator)
+        ax.xaxis.set_major_formatter(date_format)
+    def _set_titles(self,ax, title=None, xlabel=None, ylabel=None):
+        if title:
+            ax.set_title(title)
+        if xlabel:
+            ax.set_xlabel(xlabel)
+        if ylabel:
+            ax.set_ylabel(ylabel)
+        
+    def TS_whole(self, out_file_name= None, filter_expr= None):
+        '''- 总览消息量的走势'''
+        if isinstance(filter_expr, pl.Expr):
+            ldf= self.df.lazy().filter(filter_expr)
+        else:
+            ldf= self.df.lazy()
+            
+        df= (ldf
+            .groupby(['time_bin'], maintain_order=True)
+            .agg([
+                self.ts2dt_str,
+                pl.col('timestamp').count().alias('count')
+            ])
+            .sort('time_bin')
+            #.select(pl.exclude('time_bin'))
+            .collect()
+            .to_pandas()
+            #.set_index('date')
+        )
+
+        df['date'] = pd.to_datetime(df['date'], infer_datetime_format=True)
+
+        plt.style.use('seaborn-v0_8-paper')
+        fig, ax = plt.subplots(figsize= self.figsize)
+        ax.plot(df['date'], df['count'], color='b', linewidth=2)
+
+        self._set_titles(ax,'number of updates', 'Date', 'Count')
+        #self._fmt_date(ax)
+        ax.yaxis.set_major_formatter(self._fmt_sci())
+        fig.tight_layout()
+        if out_file_name:
+            plt.savefig(f"{out_file_name}.jpg", dpi=300)
+        
+        plt.show()
+        return df
+
+    def TS_AW_compare(self, out_file_name= None, filter_expr= None):
+        '''- 对比宣告、撤销消息量的走势'''
+        if isinstance(filter_expr, pl.Expr):
+            ldf= self.df.lazy().filter(filter_expr)
+        else:
+            ldf= self.df.lazy()
+        df_= (ldf
+            .groupby(['msg_type','time_bin'], maintain_order=True)
+            .agg([
+                self.ts2dt_str,
+                pl.col('timestamp').count().alias('count')
+            ])
+            .sort('time_bin')
+            #.select(pl.exclude('time_bin'))
+            .collect()
+            .to_pandas()
+            #.set_index('date')
+        )
+        df_['date'] = pd.to_datetime(df_['date'], infer_datetime_format=True)
+
+        grouped = df_.groupby(['msg_type']).groups
+
+        plt.style.use('seaborn-v0_8-paper')
+        fig, ax = plt.subplots(figsize= self.figsize)
+        linestyle= {'A': '-', 'W':'--'}
+        for msg_type, idxs in grouped.items():
+            x= df_.loc[idxs, 'date']
+            y= df_.loc[idxs, 'count']
+            ax.plot(x, y, label= msg_type, linewidth=1, linestyle=linestyle[msg_type], color='black')    #  s=3,
+            ax.legend()
+        try:
+            start_date= df_.loc[(df_['msg_type']=='A'),:].iloc[125, 2]
+            end_date  = df_.loc[(df_['msg_type']=='A'),:].iloc[185, 2]
+            print(start_date, end_date)
+            plt.fill_between(
+                df_['date'], df_['count'].min(), df_['count'].max(), 
+                where=((df_['date'] >= start_date) & (df_['date'] <= end_date)), 
+                color='gray', alpha=0.3)
+        except:
+            print('cant draw shadow')
+        self._set_titles(ax,'number of updates', 'Date', 'Count')
+        #self._fmt_date(ax)
+        ax.yaxis.set_major_formatter(self._fmt_sci())
+        fig.tight_layout()
+        if out_file_name:
+            plt.savefig(f"{out_file_name}.jpg", dpi=300)
+        
+        plt.show()
+        return df_
+
+    def TS_peer_compare(self, out_file_name= None, filter_expr= None):
+        '''- 对比各个peer消息量的走势'''
+        if isinstance(filter_expr, pl.Expr):
+            ldf= self.df.lazy().filter(filter_expr)
+        else:
+            ldf= self.df.lazy()
+
+        df_= (ldf
+            .groupby(['peer_IP','time_bin'], maintain_order=True)
+            .agg([
+                self.ts2dt_str,     
+                pl.col('timestamp').count().alias('count')
+            ])
+            .sort('time_bin')
+            #.select(pl.exclude('time_bin'))
+            .collect()
+            .to_pandas()
+            #.set_index('date')
+        )
+        df_['date'] = pd.to_datetime(df_['date'], infer_datetime_format=True)
+
+        grouped = df_.groupby(['peer_IP']).groups
+
+        plt.style.use('seaborn-v0_8-paper')
+        fig, axes = plt.subplots(nrows=len(grouped), figsize=(10, len(grouped)), sharex=True)
+        i=0
+        for peer_IP, idxs in grouped.items():
+            x= df_.loc[idxs, 'date']
+            y= df_.loc[idxs, 'count']
+            ax = axes[i]
+            ax.plot(x, y, label=peer_IP)    #  s=3,, linewidth=1
+            #ax.set_title(f'{peer_IP}')
+            #ax.set_ylabel('Count')
+            ax.legend()
+            i+=1
+              
+        fig.tight_layout()
+        if out_file_name:
+            plt.savefig(f"{out_file_name}.jpg", dpi=300)
+        
+        plt.show()
+        return df_
+
+    def list_peers_rank(self, thd_per_min= 100):
+        '''- 阈值法筛选peers'''
+        thd= self.df['time_bin'].max()* thd_per_min
+        peers_rank= self.df['peer_IP'].value_counts()
+        peers_set= set((peers_rank
+            .filter(pl.col('counts')>=thd)
+            ['peer_IP'].to_list())
+            )
+        return peers_rank, peers_set
+
+    def df_Apeer(self, out_file_name= None, filter_expr= None):
+        '''- 获取一个peer下的完整消息'''
+        if isinstance(filter_expr, pl.Expr):
+            ldf= self.df.lazy().filter(filter_expr)
+        else:
+            ldf= self.df.lazy()
+        df_= (ldf
+            .select([
+                'time_bin', 
+                self.ts2dt_str,
+                'dest_pref',
+                pl.col('path').str.extract(' (\d+)$', 1).cast(pl.Utf8).alias('loc_0'),
+                pl.col('path').str.extract(' (\d+) \d+$', 1).cast(pl.Utf8).alias('loc_1'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+$', 1).cast(pl.Utf8).alias('loc_2'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+ \d+$', 1).cast(pl.Utf8).alias('loc_3'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+ \d+ \d+$', 1).cast(pl.Utf8).alias('loc_4'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+ \d+ \d+ \d+$', 1).cast(pl.Utf8).alias('loc_5'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+ \d+ \d+ \d+ \d+$', 1).cast(pl.Utf8).alias('loc_6'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+ \d+ \d+ \d+ \d+ \d+$', 1).cast(pl.Utf8).alias('loc_7'),
+                pl.col('path').str.extract(' (\d+) \d+ \d+ \d+ \d+ \d+ \d+ \d+ \d+$', 1).cast(pl.Utf8).alias('loc_8'),
+            ])
+            .collect()
+            .to_pandas()
+            #.set_index('date')
+        )
+        df_['date'] = pd.to_datetime(df_['date'], infer_datetime_format=True)
+        return df_
+
+    def set_local_mapping_and_draw_Veen(self, out_file_name= None, filter_expr= None, set_global_mapping= None):
+        '''
+        - 获取pfx_oriAS映射集合, 用Venn图比较全局pfx_oriAS映射和当前映射集合的关系
+        '''
+        if isinstance(filter_expr, pl.Expr):
+            ldf= self.df.lazy().filter(filter_expr)
+        else:
+            ldf= self.df.lazy()
+        df_= set(ldf
+            .select(pl.col('dest_pref')+pl.lit(' ')+ pl.col('originAS'))
+            .collect().to_series()        )
+        print(f"当前df子集中，含pfx-oriAS映射{len(df_)} 对。")
+        
+        if set_global_mapping!= None:
+            ratio= len(df_.difference(set_global_mapping))/len(df_)
+            print(f"本地新映射占本地总映射之比：{ratio:.2%}")
+            venn2([df_, set_global_mapping], set_labels=('pfx-AS_event', 'pfx-AS_global'))
+            plt.show()
+
+        return df_
 
 #######################
 # 分析特征
 #######################
 
 class FeatMatHandler:
-    '''- 得到特征矩阵后进行的加工操作：如谱残差'''
+    '''- 谱残差'''
     @staticmethod
     def spectral_residual(data, smooth_window=1):
         '''
-        - description: 
-        - args-> data {*}: 一个特征的时序数据
         - args-> smooth_window {*}: 较大的窗口可能会捕捉到更低频的周期成分，而较小的窗口可能会捕捉到更高频的周期成分。
         - return {*}
         '''
         data_fft = fft(data)
-        # 计算幅度谱和相位谱
+        
         amplitude_spectrum = np.abs(data_fft)
         phase_spectrum = np.angle(data_fft)
         log_data = np.log(amplitude_spectrum)  
-        # 平滑幅度谱
+        
         smoothed_amplitude = np.convolve(log_data, np.ones(smooth_window) / smooth_window, mode='same')
-        # 计算谱残差
+        
         spectral_residual = log_data - smoothed_amplitude
         residual_signal = np.real(ifft(np.exp(spectral_residual + 1j * phase_spectrum)))
-        # 计算异常分数（平方值）
+        
         anomaly_scores = np.square(residual_signal)
 
         return anomaly_scores
 
 class Filter:
-    '''- 进行特征过滤。'''
+    '''- 特征过滤'''
     def __init__(self, df:pd.DataFrame):
         df= df.fillna(0.0)        
         self.df= df
@@ -1021,7 +1434,7 @@ class Filter:
         self.y= df.iloc[:,-1]
 
     def variance_filter(self,thd):
-        '''- 方差过滤: excluding low variance feats, return DF filtered several feats'''
+        '''- excluding low variance feats, return DF filtered several feats'''
         selector_vt = VarianceThreshold( thd )
         x_varThd = selector_vt.fit_transform(self.x)
         return pd.DataFrame(x_varThd, columns= selector_vt.get_feature_names_out())
@@ -1029,9 +1442,6 @@ class Filter:
     def chi2_filter(self, x_varThd):        
         ''' 
         description: to get the filtered feats which p_value >0.05 from chi2 and the rank(descending) of all feats by chi2
-        param {*} self
-        param {DF} x_varThd
-        return {DF, DF} x_chi2[rows* new_feats], df_chi2[all_feats* 1]
         '''                
         chival, pval= chi2(x_varThd, self.y)
         k_chi2= (pval<= 0.05).sum()         # get hyperparameters: k feats to be remained after chi2 filtering
@@ -1057,25 +1467,9 @@ class Filter:
 
         return x_mic, df_mic
 
-    '''def RFE_filter(self, x_varThd):
-        svc= SVC( kernel='linear')
-        rfecv= RFECV(estimator= svc, 
-            step=1, 
-            cv= StratifiedKFold(2), 
-            scoring= 'accuracy', 
-            min_features_to_select=1)
-        rfecv.fit(x_varThd, self.y)
-        return rfecv'''
-
     def redu_filter(self, x_flted1: pd.DataFrame, df_ranked1: pd.DataFrame, redu_thd: float):
         '''
         description: filter redundant feats by deleting corr between feats
-        param {*} self
-        param {pd} x_flted1     : [rows*part_feats]
-        param {pd} df_ranked1   : [all_feats*1]
-        param {float} redu_thd
-        return {pd} rele_table  : [num of deleted feats* 3]
-        return {pd} x_del_corr  : [rows*part_feats]
         '''
         df_corr= abs(x_flted1.corr(method= 'spearman'))
         df_corr_= df_corr[df_corr> redu_thd]
@@ -1084,7 +1478,7 @@ class Filter:
 
         #fig= plt.figure(figsize=(10,8))
         #sns.heatmap(df_corr_, annot= False)
-        rele_table=[]   # 相关系数(spearman)高的特征对的集合, (相关系数，feat1(to del), feat2(to save))
+        rele_table=[]   
         li_ranked1= df_ranked1.index.tolist()
 
         while df_corr_.sum().sum()> 0:
@@ -1097,7 +1491,7 @@ class Filter:
             rele_table.append( (max_val, tar_col, tar_col2))
 
             df_corr_= df_corr_.drop(index= tar_col, columns= tar_col)
-                # 精简x特征子集并验证其模型效果
+            
         new_cols= df_corr_.columns
         x_del_corr= x_flted1[new_cols ]
         # cross_val_score(RFC(n_estimators=10,random_state=0),x_del_corr ,y,cv=5).mean()
@@ -1108,8 +1502,6 @@ class Filter:
     def get_redu_thd(self, x_flted1: pd.DataFrame, df_ranked1: pd.DataFrame):
         '''
         description: to find hyperparameters redundant threshold in df.corr()
-        return {*} max_thd
-        return {list(tuple)} mdl_score  : for plotting to find max_thd
         '''
         mdl_score= []
         for thd in np.arange(0,1, 0.01):
@@ -1123,17 +1515,14 @@ class Filter:
     def run(self):
         x_varThd= self.variance_filter()
         x_chi2, df_chi2= self.chi2_filter(x_varThd)
-        max_thd, mdl_score= self.get_redu_thd( x_chi2, df_chi2)
-        rele_table, x_del_corr= self.redu_filter( x_chi2, df_chi2, redu_thd= max_thd)
-        return df_res
+        #max_thd, mdl_score= self.get_redu_thd( x_chi2, df_chi2)
+        #rele_table, x_del_corr= self.redu_filter( x_chi2, df_chi2, redu_thd= max_thd)
+        return df_chi2
 
 
 def txt2df(paths: Union[str, list], need_concat:bool= True):
     '''
-    - description: 读取数据文件为pandas.df对象。
-    - args-> `paths` {*}: 若为str, 则为一个文件路径;若为list, 则为一组文件路径, 可选择concat为一个df, 或输出一组df
-    - args-> `need_concat` {bool}: 
-    - return {*} 一个df (来自一个文件, 或多个文件的合并); 一组df (来自多个文件分别读取)
+    - description: 读取数据文件为pandas.df对象
     '''
     if isinstance(paths, str):
         df= pd.read_csv(paths)
@@ -1144,10 +1533,9 @@ def txt2df(paths: Union[str, list], need_concat:bool= True):
             df_list.append( pd.read_csv(path))
         if need_concat:
             df= pd.concat(df_list, ignore_index=True)
-
-            # 合并后的大帧做些修改
+            
             df['time_bin']= df.index
-            label_map= {'normal': 0, 'hijack': 1, 'leak': 1, 'outage': 1}   # 简化为二分类问题
+            label_map= {'normal': 0, 'hijack': 1, 'leak': 1, 'outage': 1}
             df['label']= df['label'].map( label_map )
 
             return df
@@ -1156,155 +1544,21 @@ def txt2df(paths: Union[str, list], need_concat:bool= True):
 
 
 def df2Xy(df, test_size= 0):
-    '''- arg(df): 一般第1,2列为time_bin和date, 最后一列为label
-       - 有归一化操作。
-       - return: 4个子df/series, 即X_train/test, y_train/test; 或2个df/series, 即 X,y (默认, test_size=0)'''
-    # load the time series data
+    '''- Split training and testing sets'''
     df = df.iloc[:, 2:]
-
-    # separate the input and output columns
     X = df.iloc[:, :-1]
     y = df.iloc[:, -1]
 
     if test_size==0:
         return X, y
     else:
-        # split the data into train and test sets
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=True)  # 打乱后，逻辑回归的模型效果原地起飞
-        # normalize the data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=True)
         scaler = StandardScaler()
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
         return X_train, X_test, y_train, y_test
 
-
-def multi_collector_plot(event_path:str):
-    '''针对单事件、多采集器的数据。把多采集器的数据整合到一个大图的多个子图中
-    - arg: 事件的任意一个数据文件的路径'''
-    import matplotlib.pyplot as plt
-    import os
-    # 先拿到事件相关的所有文件
-    event_name= event_path.split('__')[-2]
-    dir_name  = os.path.dirname(event_path)
-    lis= os.listdir(dir_name )
-    lis= [ dir_name+'/'+ s for s in lis if event_name in s ]
-    lis.sort()
-    lis= lis[:]     # 自定义裁剪df个数
-
-    # 后作大图: 子图矩阵整合的形式
-    nrows= 9; ncols= 2
-    fig, axes= plt.subplots(nrows= nrows, ncols= ncols, figsize= (10,10) )     # 
-    
-    plt.suptitle( event_name, fontsize=14)              # 主图标题
-    #plt.subplots_adjust( top= 1)                       # 主图标题与主图上边界的距离
-
-    for i in range(nrows):
-        for j in range(ncols):
-            title= simple_plot( lis[i*2+j], axes[i][j])
-            if i == 0:
-                axes[i][j].legend(prop={'size': 6})                     # 仅在第一行的
-            if i != nrows-1:
-                axes[i][j].set_xticklabels([])          # 仅在最后一行的子图有x刻度值
-                axes[i][j].set_xlabel('')               # 仅在最后一行的子图有xlabel
-            else:
-                axes[i][j].set_xlabel('time')
-    plt.tight_layout()                                  # 自动调整整体布局
-    plt.savefig(event_name+ "18个采集器的子图矩阵对比.jpg", dpi=300)               # 高分辨率把图导出
-    
-def simple_plot(file_path:str, front_k= -1, has_label= True, subax= None, subplots= False, need_scarler= False):
-    '''针对单事件、单采集器的数据。作图观测波峰，以确定真实label'''
-    
-    # 准备图标题
-    lis= file_path.split('__')
-    try:
-        title= lis[-2]+ '__'+ lis[-1][:-4]
-    except:
-        pass
-
-    # 准备df，并预处理
-    df= pd.read_csv(file_path)
-    print(df.shape)
-        # 把日期换成只显示时分
-    df['date']= df['date'].str.slice(11, 16)
-        # 数据归一化
-    if need_scarler:
-        scaler = MinMaxScaler()
-        df.iloc[:, 2:-1]= scaler.fit_transform(df.iloc[:, 2:-1])  # 最后一列是label（str）
-    
-    # 画图
-    num_feats= len(df.columns)-2
-    if front_k==-1:
-        y= df.columns[2: ]
-    else:
-        y= df.columns[2: front_k+2]
-        num_feats= front_k
-    if not subplots:
-        num_feats= 4
-    ax= df.plot(x='date',
-            y= y,
-            #y= ['v_IGP','v_pfx_t_cnt', 'v_pp_W_cnt', 'v_A', 'is_longer_unq_path'] ,
-            #title= title,
-            figsize= (10, num_feats),
-            subplots= subplots,
-            legend= True,
-            #logy=True,
-            ax= subax,
-        )
-    #ax.set_title( title,  fontsize= 10)    # 子图标题 .split('__')[-1]
-
-        # 造阴影区域
-    if has_label:
-        rows_label= df['label'][df['label'] != 'normal'].index     #  'normal'
-        rows_label= rows_label.tolist()
-        rows_label.append(-1)
-                # 把一堆断断续续的数字变成一段一段的元组，存入 sat_end_llist
-        sat_end_list= []
-        ptr1= 0; ptr2=0
-        while ptr2< len(rows_label)-1:
-            if rows_label[ptr2]+ 1== rows_label[ptr2+1]:    # 即下一个数字是连续的
-                ptr2+=1
-                continue
-            else:
-                sat_end_list.append( (rows_label[ptr1], rows_label[ptr2]))
-                ptr2+=1
-                ptr1= ptr2
-
-                # 造多个阴影
-        '''for tup in sat_end_list:
-            ax.axvspan(tup[0], tup[-1], color='y', alpha= 0.35)'''
-
-                # 有并列子图时的造阴影
-        if subplots:
-            for a in ax:
-                for tup in sat_end_list:
-                    a.axvspan(tup[0], tup[-1], color='y', alpha= 0.35)
-
-    plt.tight_layout()
-    plt.savefig('temp.jpg', dpi=300)
-    return
-
-
-'''def collectFeat(event: list):
-    ''输入事件列表，执行特征采集全过程，存储特征矩阵为.csv''
-    ee= FET.EventEditor()
-    ee.addEvents(event)
-    
-    raw_data_path= "/data/fet/"   # "/data/fet/"    '/home/huanglei/work/z_test/Dataset/'
-    fet= FET.FET(raw_dir= raw_data_path,increment=5)
-    fet.setCustomFeats( 'ALL' )
-    p= fet.run()'''
-
-
-
-
 if __name__=='__main__':
-    # step1 看哪个rrc合适
     data= MRTfileHandler.draw_collectors_file_size('RosTel_hijack_50', '20170425.0000', '20170430.0000', ('20170426.2030','20170426.2300'))
-
-    #peer_info[0]
-
-
-
-
 

@@ -79,24 +79,22 @@ class GetRawData(object):
 
                 for monitor in event[3:]:
                     monitor= monitor.strip()
-                    interval_upd= utils.intervalMin('updates', monitor)     # 为5 或 15
+                    interval_upd= utils.intervalMin('updates', monitor)
                     satTime, endTime= utils.normSatEndTime(interval_upd, start, end)
-                    # 如上拿到了该事件该采集器下的标准化的起止时间。此时若ribtag关，则直接导出起止时间。若开，起始时间还需往前找
                     satTime_atRIB= None
                     if self.ribTag:
-                        interval_rib= utils.intervalMin('ribs', monitor)    # 为480 或 120
+                        interval_rib= utils.intervalMin('ribs', monitor)
                         satTime_atRIB, _= utils.normSatEndTime(interval_rib, satTime, endTime)
                     res[event[0]][monitor]= [satTime, endTime, satTime_atRIB]
 
         return res
 
     def isDwlad(self, type, monitor, satTime: datetime, endTime: datetime):
-        '''- 若下载过起止时间内的文件，则返回裁剪后的文件名列表；若未下载过，返回空列表'''
+        ''''''
         try:
             ppath, _, files = os.walk(self.collection_data_lib+ monitor).__next__()
             assert len(files) != 0
             try:
-                # Note: 只选择目录中的rib或updates的一类文件。
                 files= sorted( [ f for f in files if type in f])
                 files_cuted= utils.cut_files_list(files, satTime, endTime)
                 res= [ppath+ os.sep+ file for file in files_cuted]
@@ -110,7 +108,7 @@ class GetRawData(object):
         '''- download files in whole day, then cut files to sat and end. 
         - arg(type): only in 'updates', 'ribs', 'all'
         - arg(satTime, endTime): datetime type or str (e.g. `'2023-02-06-00:00'`)
-        - return: cuted  raw_files, or maybe empty list (该采集器没有收录这个时间段).'''
+        - return: cuted  raw_files, or maybe empty list'''
 
         str_map= {'updates': 'updates', 'rib.': 'ribs', 'bview.': 'ribs'}
         if not isinstance(satTime, str):
@@ -119,11 +117,11 @@ class GetRawData(object):
         else:
             sat= satTime
             end= endTime
-        if type!= 'updates' and only_rib== False:   # 即只下载一个rib的情况
+        if type!= 'updates' and only_rib== False:
             target_time= satTime.strftime('%Y%m%d.%H%M')
             a_rib_url= bgpToolKit.MRTfileHandler.get_download_url(type, monitor, target_time)
             a_rib_filename= a_rib_url.split('/')[-1]
-            # 判断url是否有效
+            
             response = requests.head(a_rib_url).status_code
             if response==200:
                 target_path= f'{self.collection_data_lib}{monitor}/'
@@ -150,14 +148,12 @@ class GetRawData(object):
         # check_error_list(sys.path[0]+ "/errorInfo.txt")
         whole_files= glob.glob(self.collection_data_lib+ monitor+ os.sep+ monitor+ '_'+ type+ '*')
         
-        # 当采集器未曾收录相应时间段，就会下载不到对应文件，用try来避错
         try:
             dest_files= utils.cut_files_list(whole_files, satTime, endTime)
         except:
             return []
         return dest_files
 
-    # 用于raw2txt中的多进程
     def trans_multiproc(self, tup):
             os.system('bgpdump -m '+ tup[1] + ' > '+ tup[0] +  os.path.basename(tup[1])+ '.txt')
 
@@ -165,7 +161,7 @@ class GetRawData(object):
         '''- description: transform BGP update raw data to .txt by command `bgpdump`
         - return `.txt list`
         '''
-        if len(raw_files)==1:   # 用于每个采集点只解析一张rib时
+        if len(raw_files)==1:
             target_path= f"{dest_dir}{os.path.basename(raw_files[0])}.txt"
             cmd= f"bgpdump -m {raw_files[0]} > {target_path}"
             p= subprocess.Popen(cmd, shell=True)
@@ -185,24 +181,18 @@ class GetRawData(object):
 
     def oneMonitor(self, type, txt_dir, monitor, fact_satTime: datetime, endTime: datetime):
         '''
-        - description: `getUpdTxts`的子函数, 用于单个monitor的多文件的下载(可能无)和解析(一定有)操作
-        - args-> self {*}: 
+        - description: 单个monitor的多文件的下载和解析
         - args-> type {*}: `'updates'`or`'rib.'`or`'bview.'`
-        - args-> txt_dir {*}: 当前event当前monitor下的解析文件路径
-        - args-> monitor {*}: 
-        - args-> fact_satTime {*}: 
-        - args-> endTime {*}: 
-        - return {*}: txtfiles 文件名列表; 也可能空列表，是采集器未收录的问题
         '''
         curDir= utils.makePath( txt_dir+ monitor+ '/' )        
-        os.system(f'rm {curDir}*_{type}*')               # 把对应事件下的曾经解析过的文件都删掉，以便重新下载再解析。
+        os.system(f'rm {curDir}*_{type}*')
         raw_files= self.isDwlad(type, monitor, fact_satTime, endTime)
-        if not len(raw_files):    # 未下载
+        if not len(raw_files): 
             st1= time.time()
             raw_files= self.download(type, monitor, fact_satTime, endTime, only_rib= not self.updTag )
             logger.info(' '*4+ '- %s dwladed: %.3f sec, %d files.' %( monitor, time.time()- st1, len(raw_files)))
 
-        if not len(raw_files):    # 下载后仍为空
+        if not len(raw_files):
             logger.warning(' '*4+ '- %s has missed files on website.' % monitor)
             return []
 
@@ -219,13 +209,10 @@ class GetRawData(object):
         ppath, dirs, _= os.walk( self.collection_data_lib_parsed ).__next__()
         for evtNm, moniDict in events_dict.items():
             logger.info(' '*2+ '- %s:' % evtNm )
-            if evtNm in dirs:   # 当事件名目录已存在, 即可能解析过该事件了
+            if evtNm in dirs:
                 p2, moni_dirs, _ = os.walk( ppath+ evtNm+ os.sep ).__next__()
                 for monitor,[ satTime_tradiFeat, endTime, satTime_graphFeat ] in moniDict.items():
-                    # 以上3个时间都是标准化了的。updates消息的起始解析时刻有两种：
-                    #   - 只有传统特征时，就是`原starttime`
-                    #   - 要解析图特征时，把`原starttime`替换为`satTime_atRIB`
-                    # 需求的文件名列表是否都在 实际的文件名列表中 allin
+                    
                     txtfiles= sorted(glob.glob(p2+ monitor+ os.sep+ monitor+ '_updates*'))
                     if not satTime_graphFeat :
                         fact_satTime= satTime_tradiFeat
@@ -239,13 +226,12 @@ class GetRawData(object):
 
                     if monitor in moni_dirs and allin :
                         target_files= utils.cut_files_list(txtfiles, fact_satTime, endTime)
-                        # 变量 watershed_ 用在有图特征的情况下，切分updates的文件列表target_files。使其前部分用于更新拓扑；后部分用于计算传统特征。
                         res[evtNm][monitor]= ( target_files, watershed_ )
                         logger.info(' '*4+ '- %s: upds has existed, don\'t need to parse.' % monitor)
-                    else:   # 未解析过该采集器
+                    else:
                         res[evtNm][monitor]= ( self.oneMonitor('updates', p2, monitor, fact_satTime, endTime), watershed_ )
                         
-            else:   # 未解析过该事件
+            else:
                 for monitor,[ satTime_tradiFeat, endTime, satTime_graphFeat ] in moniDict.items():
                     if not satTime_graphFeat :
                         fact_satTime= satTime_tradiFeat
@@ -259,13 +245,9 @@ class GetRawData(object):
 
     def getRibTxts(self, events_dict):
         '''
-        - description: 解析rib文件。
-            - 当self.updTag= True, 每个 event/monitor 下仅需一个rib（startTime的左邻近）; 
-            - 当False, 则需全量下载解析指定时间段内的rib表
-        - args-> events_dict {*}: 
+        - description: 解析rib文件
         - return {*}: `{'evtNm': {'monitor': [.txt]|[] } } `
         '''
-        # 用于单个采集点采集一个rib的情况
         list_parsing=[]
         list_downloading=[]
 
@@ -278,21 +260,18 @@ class GetRawData(object):
             for monitor,[ _, endRIBtime, satRIBtime ] in moniDict.items():
                 txtFolder= ppath+ evtNm+ '/' + monitor+ '/'     
                 utils.makePath(txtFolder)
-
-                # 先看看txtFolder目录下是否已经解析好了相应数据。
+                
                 txtfiles= sorted(glob.glob( txtFolder+ monitor+ '_'+ strmap[monitor[:3]]+ '*' ))
                 interval= utils.intervalMin('ribs', monitor[:3])
-                if self.updTag:     # 仅需一张rib的情况
-                    if len(txtfiles) != 1:  # 当没有解析数据
-                        # 拿到basename
+                if self.updTag:
+                    if len(txtfiles) != 1:
                         target_time= satRIBtime.strftime('%Y%m%d.%H%M')
                         a_rib_url= bgpToolKit.MRTfileHandler.get_download_url(type, monitor, target_time)
                         basename = a_rib_url.split('/')[-1]
                         download_file= f"{self.collection_data_lib}{monitor}/{monitor}_{basename}"
                         pathTXT= f"{self.collection_data_lib_parsed}{evtNm}/{monitor}/{monitor}_{basename}.txt"
-                        # 当没下载
+                        
                         if not os.path.exists(download_file):
-                            # 当没下载，先判断url是否有效
                             response = requests.head(a_rib_url).status_code
                             if response==404:
                                 logger.warning(f'    - in {monitor}, url WRONG:`{a_rib_url}`')
@@ -301,7 +280,6 @@ class GetRawData(object):
                                 list_downloading.append({'url': a_rib_url, 'path': download_file})
                                 list_parsing.append({'pathMRT': download_file, 'pathTXT': pathTXT})
                                 res[evtNm][monitor]= [pathTXT]
-                        # 当已经下载
                         else:
                             list_parsing.append({'pathMRT': download_file, 'pathTXT': pathTXT})
                             res[evtNm][monitor]= [pathTXT]
@@ -309,14 +287,14 @@ class GetRawData(object):
                         logger.info(' '*4+ '- %s: ribs has existed, don\'t need to parse.' % monitor)    
                         res[evtNm][monitor]= txtfiles 
 
-                else:               # 需多张rib的情况
+                else:
                     allin= utils.allIn(interval, txtfiles, satRIBtime, endRIBtime)
                     if allin:
                         logger.info(' '*4+ '- %s: ribs has existed, don\'t need to parse.' % monitor) 
                     else:
                         txtfiles= self.oneMonitor(strmap[monitor[:3]], ppath+ evtNm+ '/', monitor, satRIBtime, endRIBtime)
-                    res[evtNm][monitor]= txtfiles  
-        # 并行下载
+                    res[evtNm][monitor]= txtfiles 
+                    
         if list_downloading:
             plist=[]
             for dic in list_downloading:
@@ -326,7 +304,7 @@ class GetRawData(object):
                 plist.append(p)
             for p in plist:
                 p.wait()
-        # 并行解析
+                
         if list_parsing:
             p2list=[]
             for dic in list_parsing:
@@ -344,18 +322,17 @@ class GetRawData(object):
         - return `{ 'updates': {'evtNm': {'monitor': ([ '.txt', ...], str|None) } } |{}, 
                     'ribs'    : {'evtNm': {'monitor': [ '.txt', ...]|[]         } } |{}
                   }`
-        - 其中`ribs`的值在不求图特征时为 `{}`'''
-        if not os.path.exists( self.collection_data_lib_parsed ):   # 多余
+        '''
+        if not os.path.exists( self.collection_data_lib_parsed ):
             utils.makePath( self.collection_data_lib_parsed )
         resUpd, resRib= {},{}
-        # 收集updates文件
+        
         if self.updTag:
             logger.info('Start: parse `updates` data:')
             resUpd= self.getUpdTxts(events_dict)
             logger.info('End: `updates` data.')
         else:
             logger.info('ONLY analysis ribs with graph-features, no need to get any updates files.')
-        # 收集rib文件
         if self.ribTag:
             t1= time.time()
             logger.info('Start: parse `ribs` data:')
@@ -366,12 +343,10 @@ class GetRawData(object):
 
     def run(self):
         '''
-        - description: 根据事件信息进行下载、解析模块的主api
+        - description: main func
         - return {*}: 
             `{ 'updates': {'evtNm': {'monitor': ( [ .txt, ...]|None, str|None ) } },
                 'ribs'  : {'evtNm': {'monitor': [.txt]|None                       } } | {}   } `
-            - 其中updates中的str: 为日期分水岭，当ribs的值为空，则此处为None;
-            - 当 self.updTag= False, 则 updates部分的值为空
         '''
         evtDic= self.getEventsDict()
         txtDic= self.getRawTxts(evtDic)
