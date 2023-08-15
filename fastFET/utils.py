@@ -75,13 +75,13 @@ def normSatEndTime(interval, satTime: datetime, endTime: datetime=None):
     return (satTime, endTime)
 
 def cut_files_list(files, satTime, endTime):
-    '''裁剪文件名列表至指定的起止时间范围内。'''    
+    '''裁剪文件名列表至指定的起止时间范围内。'''     
     try:
         files= sorted(files)
         mmnts_in_files= [ re.search('\d{8}.\d{4}', file).group() for file in files ]
         satIdx= mmnts_in_files.index(satTime.strftime( '%Y%m%d.%H%M' ))
         endIdx= mmnts_in_files.index(endTime.strftime( '%Y%m%d.%H%M' ))
-        cuted= files[ satIdx:endIdx+1 ]
+        cuted= files[ satIdx:endIdx+1 ]   # TODO: files[ satIdx:endIdx ]
     except:
         msg= f'can`t cut files like `{files[0]}`, you should check if existing incomplete files, or if having a different time format in file names.'
         logger.error(msg)
@@ -244,7 +244,7 @@ def labelMaker(save_path: str, sat_end_list: list, all_to_normal= False):
     ''' - sat_end_list: list['start, end', '', ...]
         - all_to_normal: 为True时, 把所有样本的label初始化为无异常
     '''
-    df= pl.read_csv( save_path )
+    df= pl.read_csv( save_path ).sort('time_bin')
     if all_to_normal or 'label' not in df.columns:
         series_= pl.Series('label', ['normal']* df.shape[0])
         df['label']= series_
@@ -384,7 +384,7 @@ def timer(func):
 
         try:
             funcName= func.__name__ if func.__name__ != 'run_cmpxFeat_inMulproc' else args[-2]
-            logger.info(' '* args[-1] + f'func= `{funcName}`; cost={(end_time - begin_time):3.2f} sec; begin&end_memo= {begin_memo}->{end_memo}; ppid={os.getppid()} ') 
+            #logger.info(' '* args[-1] + f'func= `{funcName}`; cost={(end_time - begin_time):3.2f} sec; begin&end_memo= {begin_memo}->{end_memo}; ppid={os.getppid()} ') 
         except Exception as e:
             #raise e
             logger.info(' '*6+ f'..func= `{funcName}`; cost={(end_time - begin_time):3.2f} sec; begin&end_memo= {begin_memo}->{end_memo}; ppid={os.getppid()} ') 

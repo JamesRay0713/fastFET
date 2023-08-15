@@ -355,17 +355,14 @@ class FET():
             llist= utils.splitChunk(paths_actual, self.need_rib)
             chunk_num= len(llist)
             for serialNum, chunk in enumerate(llist) :
-                try:
-                    modify_df_topo= True if serialNum+1 < chunk_num else False  
-                    logger.info(f' '*4+ f'chunk-{serialNum+1}/{len(llist)} ---------- `chunkHandler` started:')
-                    res= self.chunkHandler(chunk, modify_df_topo, 4 )
-                    with open(save_path, 'a') as f:
-                        has_head= True if serialNum==0 else False
-                        #res.sort('time_bin', in_place=True)
-                        res_= res.to_csv(has_header= has_head)
-                        f.write(res_)
-                except Exception as e:  
-                    raise(e)
+                modify_df_topo= True if serialNum+1 < chunk_num else False  
+                logger.info(f' '*4+ f'chunk-{serialNum+1}/{len(llist)} ---------- `chunkHandler` started:')
+                res= self.chunkHandler(chunk, modify_df_topo, 4 )
+                with open(save_path, 'a') as f:
+                    has_head= True if serialNum==0 else False
+                    #res.sort('time_bin', in_place=True)
+                    res_= res.to_csv(has_header= has_head)
+                    f.write(res_)
                     
             self.postHandler(save_path, 6, dont_label= dont_label)
             
@@ -581,7 +578,7 @@ class EventEditor():
     def addEvents(self, evts:list):
         '''add any event you want.
         - arg  format: `['event_name, start_time, end_time(可为空), collector(可多个)']`
-        - arg example: `["facebook_outage, 2021/10/4 15:40:00, 2021/10/4 21:40:00, rrc00, rrc06", "GoogleLeak, 2017/08/25 01:00:00, 2017/08/25 06:00:00, rrc06"]`
+        - arg example: `["facebook_outage, 2021/10/4 15:40:00, 2021/10/4 21:40:00, rrc00, rrc06", "Google_leak, 2017/08/25 01:00:00, 2017/08/25 06:00:00, rrc06"]`
         '''
         with open(os.path.dirname(__file__)+'/event_list.csv', 'a') as f:
             for s in evts:

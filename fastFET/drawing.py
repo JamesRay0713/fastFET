@@ -5,7 +5,7 @@
 - version: 1.0
 - Author: JamesRay
 - Date: 2023-03-21 22:44:06
-- LastEditTime: 2023-06-18 06:55:36
+- LastEditTime: 2023-07-04 03:39:48
 '''
 import pandas as pd
 import polars as pl
@@ -167,7 +167,10 @@ def simple_plot(file_path:str, front_k= -1, has_label= True, subax= None, subplo
     #ax.set_title( title,  fontsize= 10)
 
     if has_label:
-        rows_label= df['label'][df['label'] != 'normal'].index     #  'normal'
+        if df['label'].dtype== 'int64':
+            rows_label= df['label'][df['label'] != 0].index
+        else:
+            rows_label= df['label'][df['label'] != 'normal'].index     #  'normal'
         rows_label= rows_label.tolist()
         rows_label.append(-1)
         sat_end_list= []
@@ -181,16 +184,16 @@ def simple_plot(file_path:str, front_k= -1, has_label= True, subax= None, subplo
                 ptr2+=1
                 ptr1= ptr2
 
-        '''for tup in sat_end_list:
-            ax.axvspan(tup[0], tup[-1], color='y', alpha= 0.35)'''
-
         if subplots:
             for a in ax:
                 for tup in sat_end_list:
                     a.axvspan(tup[0], tup[-1], color='y', alpha= 0.35)
+        else:
+            for tup in sat_end_list:
+                ax.axvspan(tup[0], tup[-1], color='y', alpha= 0.35)
 
     plt.tight_layout()
-    plt.savefig('temp.jpg', dpi=300)
+    plt.savefig(f'simple_plot__{title}.jpg', dpi=300)
     return
 
 

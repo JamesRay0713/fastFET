@@ -1,36 +1,25 @@
-
-持续优化的问题：
-- 计算ED那里，对比测试多进程的情况。
-- 自定义多进程模块中，等待睡眠为1s是否合理。
-- 做一个对比各个特征计算时间的函数。
-- 构建函数：输入一个或多个新特征，能把采集结果追加到已有的DF.csv。这要涉及到`自定义特征采集函数`的API
-- 关于每slot如何构建全局拓扑图：还是要结合pl.DF来加速计算，避免逐条消息更新。
-- requirement的预安装，特别是bgpdump
-- 针对异常类型的特征设计：子前缀劫持、路径劫持、路由泄露等，连接其他框架？
-
-require add:
-    - pyarrow
-
 # BGP特征提取工具 
 
 ## 组织结构
 
-### 1. 库路径
+### 1. 项目路径
 
 ```
 fastFET  
     ├── BGPMAGNET/      BGP原始数据下载工具(by倪泽栋)  
-    ├── collectData.py  主模块：数据收集，包括下载、解析   
+    ├── bgpToolKit.py   BGP异常检测中常用的辅助函数
+    ├── collectData.py  主模块：数据收集，包括下载、解析 
+    ├── drawing.py      特征提取后的数据作图  
     ├── event_list.csv　要采集的事件列表  
     ├── featGraph.py    图特征采集功能集合   
     ├── featTradition.py传统特征采集功能集合  
     ├── featTree.py     特征树，集成所有特征及其pl.Expr  
     ├── FET.py          主模块：特征采集  
     ├── logConfig.json  日志配置  
-    ├── utils.py        工具集合   
     ├── MultiProcess.py 多进程工具   
-    ├── README.md  
-    └── requirements.txt
+    ├── README.md 
+    ├── RIPEStatAPI.py  `https://stat.ripe.net/data/*`常用接口集合 
+    └── utils.py        工具集合   
 ``` 
 
 ### 2. cwd 默认路径
@@ -53,36 +42,71 @@ cwd
 
 ## 使用方法
 
-创建特征提取工具对象`fet`, 指定特征集合, 添加目标事件信息, 开始提取特征。
+### - 提取特征
+
+创建特征提取工具对象`fet`, 添加目标事件信息, 指定特征集合, 开始提取特征：    
 ```python
 from fastFET import FET
 ev= FET.EventEditor()
-ev.addEvents([])
-fet= FET.FET()
-fet.setCustomFeats([])
+event1= "RU_AS_hijack_twitter,2022/03/28 11:05:00, 2022/03/28 12:06:00, rrc22"
+ev.addEvents([event1,])
+
+fet= FET.FET(raw_dir= 'Dataset/', increment=4)
+fet.setCustomFeats(["volume"])
 feat_path= fet.run()
 ```
-- 先利用 EventEditor 的 addEvents 方法添加此次要采集特征的事件信息。
-    - 格式：事件名；起始时间；结束时间（可缺省）；采集器（可多个，用`,`相隔）
-    - 举例：`GoogleLeak,2017/08/25 05:00:00,2017/08/25 06:00:00,rrc06,rrc05`
-- 后利用 `fet` 对象实现特征采集操作。
-    1. 初始化对象: `fet= FET.FET()`, 参数见注释, 其中 `slot` 为特征采集的时间尺度, 默认1分钟。
-        
-    2. 自定义此次采集所需的特征集合: `fet.setCustomFeats([...])`
-        - 有3种自定义特征的方法：全量采集；按类别采集；按单个特征采集 (详见该方法的注释)
-        - 若想查看该工具现已集成的特征列表：`feats= fet.getAllFeats()`
+- `addEvents`方法添加此次要采集特征的事件信息列表。格式：事件名；起始时间；结束时间（可缺省）；采集器（可多个，用`,`相隔）。
+- `fet= FET.FET()`，特征采集器实例。
+- `fet.setCustomFeats([...])`，自定义所采集特征类型。3种方法：全量采集；按类别采集；按单个特征采集 (详见该方法注释)。
+- `feats= fet.getAllFeats()`，查看该工具现已集成的特征列表。
+- `fet.run()`，运行主函数。参数`only_rib= True`时，实例仅用于对rib表图特征采集。返回特征存放路径。
 
-    3. 正式采集特征: `fet.run()`
-        - 参数: 当`fet`对象仅仅只从大量 rib 表采集图特征时`only_rib`才为`True`, 此时自定义的特征集合仅限于图特征
-        - 返回: 特征存放路径
+### - 特征分析
+作图分析特征时序变化：
+```python
+from fastFET.drawing import simple_plot
+from glob import glob
+ev_name= event1.split(',')[0]
+p= glob(f"{feat_path}*{ev_name}*")[0]
+simple_plot(p, front_k= 5, subplots=False)
+```
 
-## 框架解释
-- RIPE NCC和RouteViews的`.gz`和`.bz2`原始数据经并行下载和 `bgpdump`工具转码得到的`.txt`文件，根据事件和采集器名分别存入 `./Dataset/raw_parsed/event_name/monitor_name/`
-- 利用 `polars` 数据分析工具高效提取BGP特征，按事件名存入 `./Dataset/features/date__event__collector.csv`。
-- 顺便收集了事件中出现的MOAS消息，存入`./Dataset/MOAS/`
+### - 其他工具
+```python
+# 获取IP经纬度和地址
+from fastFET.bgpToolKit import CommonTool
+dic= CommonTool.ip2coord(['8.8.8.8'])
 
+# 收集RIPE-NCC和RouteViews项目中的peers
+from fastFET.bgpToolKit import PeersData
+dic_peer= PeersData.get_peers_info()
+dic_rrc = PeersData.get_rrc_info()
 
-## 输出字段说明
+# 画图：快速查看各采集点消息量的宏观走势
+from fastFET.bgpToolKit import MRTfileHandler
+MRTfileHandler.draw_collectors_file_size(time_start= '20211004.1200', time_end= '20221004.1200')
+
+# 从所有采集点的rib表获取全局 prefix和peer_AS的共现矩阵
+from fastFET.bgpToolKit import COmatrixPfxAndPeer
+COmatrixPfxAndPeer.get_pfx2peer_COmatrix_parall()
+rank= COmatrixPfxAndPeer.peers_rank_from_COmat()    # 计算全球peerAS的视野排名
+
+# 从一个rib表中选出最佳的peers列表
+from fastFET.bgpToolKit import PeerSelector
+lis= PeerSelector.select_peer_from_a_rib(f"{rib_path}")
+
+# 特征提取前的数据清洗
+from fastFET.bgpToolKit import UpdsMsgPreHandler
+df_new= UpdsMsgPreHandler.run_cut_peak()
+
+# 作图：直接针对updates消息的分析工具
+from fastFET.bgpToolKit import RawMrtDataAnaly
+rda= RawMrtDataAnaly()
+```
+
+更多工具实现详见： `./bgpToolKit.py`, `./RIPEStatAPI.py`
+
+## 特征字段说明
 - 共139字段，含序列号，日期，136个特征，及标签。
 
 类别 | 字段 | 解释
@@ -124,8 +148,8 @@ volume | v_total | 消息总数
 \- | v_oriAS_pfx_avg | 不同prefix-originAS对出现过的平均次数
 \- | v_oriAS_pfx_max | 不同prefix-originAS对出现过的最大次数
 \- | v_oriAS_pp_cnt | 不同peer-prefix-originAS对的数量
-\- | v_oriAS_pp_avg | 不同peer-prefix-originAS对出现过的平均次数
-\- | v_oriAS_pp_max | 不同peer-prefix-originAS对出现过的最大次数
+\- | v_oriAS_pp_avg | 不同peer-prefix-originAS对出现过的平均次数.
+\- | v_oriAS_pp_max | 不同peer-prefix-originAS对出现过的最大次数.
 path | path_len_max | 最大路径长度
 \- | path_len_avg | 平均路径长度
 \- | path_unq_len_max | 去重后的最大路径长度
@@ -194,7 +218,7 @@ node_level_graph | nd_degree_centrality | 节点平均度中心性
 \- | nd_eigenvector_centrality | 节点平均特征向量中心度
 \- | nd_pagerank | 节点平均重要度排名
 \- | nd_clustering | 节点平均聚类中心性
-\- | nd_triangles | 节点平均三角形数量
+\- | nd_triangles | 节点平均三角形数量 
 \- | nd_eccentricity | 节点平均偏心率
 \- | nd_average_shortest_pth_length | 节点平均最短路径长度
 \- | nd_load_centrality | 节点平均负载中心性
@@ -219,17 +243,16 @@ AS_level_graph | gp_nb_of_nodes | 总节点数
 \- | label	|	异常类型标签
 
 
-
-
 ## 特征补充
+下述特征留待实现
 
 字段            |  说明
  ----           |  ----
 ConcentratRatio |  前三个最活跃的宣告前缀/宣告总数（即 `vol_ann_pfx_max / v_A`）
 
 
-## 其他注意事项 
-
+## 其他
+### BGP原始数据处理中注意事项 
 1. BGP RAW DATA: 采集时间间隔不统一，如rrc00中20030723.0745之前为15min（且时刻不固定），之后为5min（时刻固定）。
 2. MRT文件解析后，path 字段可能存在`{}`形式，如下: 
     - 58057 6939 4635 4788 38044 23736
@@ -238,8 +261,6 @@ ConcentratRatio |  前三个最活跃的宣告前缀/宣告总数（即 `vol_ann
 3. `stat.ripe.net`的API获取的路由，path字段可能存在`[]`形式。
 3. `Route-Views`中的MRT文件名格式不严谨，经常出现无规律的时间戳。
 
-
-# 发现：
-- 劫持震荡：
-当`is_MOAS`很大，而`vol_oriAS_peer_pfx`或`vol_oriAS_pfx`很小时，说明存在一个prefix反复被多个AS宣告的情况。
+### 数据分析中观测到的一些现象
+- 劫持震荡：当`is_MOAS`很大，而`vol_oriAS_peer_pfx`或`vol_oriAS_pfx`很小时，说明存在一个prefix反复被多个AS宣告的情况。
 - outage类型难溯源

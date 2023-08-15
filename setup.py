@@ -19,7 +19,7 @@ with open("requirements.txt", "r", encoding='UTF-8' ) as f:
 
 setup( 
     name="fastFET",
-    version="0.0.5", 
+    version="0.0.7", 
     author="James Ray",
     author_email="hl1670704310@icloud.com",
     description="A fast feature extrating tool for BGP Dataset Collection.",

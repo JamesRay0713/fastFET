@@ -219,7 +219,7 @@ class GraphBase( object ):
             try:
                 t_= time()
                 res_nk[ featNm ]= featFunc( *args )
-                logger.info(f' '*(space)+ f'thread_func= `{featNm}`; cost={(time() - t_):3.2f} sec; cur_memo= {utils.curMem()}')
+                #logger.info(f' '*(space)+ f'thread_func= `{featNm}`; cost={(time() - t_):3.2f} sec; cur_memo= {utils.curMem()}')
 
             except Exception as e :
                 logger.info(f' '*(space)+ f'Error with feature in thread: {featNm}' )
@@ -299,7 +299,7 @@ class GraphBase( object ):
             for featNm, (func, *args) in feats_nx.items():
                 t_= time()
                 res_nx[ featNm ]= func( *args )
-                logger.info(f' '*(space)+ f'nx_func= `{featNm}`; cost={(time() - t_):3.2f} sec; cur_memo= {utils.curMem()}')
+                #logger.info(f' '*(space)+ f'nx_func= `{featNm}`; cost={(time() - t_):3.2f} sec; cur_memo= {utils.curMem()}')
 
             
             for k in list( feats_nx.keys()):
@@ -320,8 +320,17 @@ class GraphBase( object ):
         
         G = GraphBase.perSlotTopo(pd_shared_topo,pd_shared_preDF, j, space+2)
         num_ori_nodes= len(G.nodes)
-        G, nodes= GraphBase.getKcoreNodes(G, j, space+2)        
+        G, nodes= GraphBase.getKcoreNodes(G, j, space+2)    
 
+        # case of not connected-subgraph
+        if not nx.is_connected(G):
+            connected_subgraphs = list(nx.connected_components(G))
+            largest_subgraph = max(connected_subgraphs, key=len)
+            largest_connected_subgraph = G.subgraph(largest_subgraph)
+            logger.info(f"`G`(node: {len(G.nodes())}) is not connected-graph. You will get largest_subgraph(node: {len(largest_connected_subgraph.nodes())}")
+            G= largest_connected_subgraph    
+            nodes= G.nodes
+            
         feats_nx, feats_nk= GraphBase.funkList( feats_dict, G, nodes, space+2 )
 
         result= GraphBase.parallFeatFunc( feats_nx, feats_nk, space+2 )

@@ -5,7 +5,7 @@
 - version: 1.0
 - Author: JamesRay
 - Date: 2023-02-06 13:10:54 
-- LastEditTime: 2023-06-17 04:51:27
+- LastEditTime: 2023-08-15 10:21:44
 '''
 import os, json, time, re, glob, jsonpath
 import requests
@@ -1133,7 +1133,7 @@ class   UpdsMsgPreHandler():
         return a
 
     @staticmethod
-    def run_cut_peak(df:pl.DataFrame, mapping_path, coef_std, coef_mean, thd):
+    def run_cut_peak(df:pl.DataFrame, mapping_path='', coef_std=3, coef_mean=1, thd=0.85):
         '''- main func'''
         global_mapping= UpdsMsgPreHandler.pfx_oriAS_mapping_from_global_rib(mapping_path)
 
